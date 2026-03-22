@@ -21,6 +21,10 @@ using Cursors = System.Windows.Input.Cursors;
 using DataFormats = System.Windows.DataFormats;
 using DragDropEffects = System.Windows.DragDropEffects;
 using OpenFileDialog = Microsoft.Win32.OpenFileDialog;
+using Path = System.IO.Path;
+using Rectangle = System.Windows.Shapes.Rectangle;
+using Ellipse = System.Windows.Shapes.Ellipse;
+using Line = System.Windows.Shapes.Line;
 
 namespace Inkbridge.Windows;
 
@@ -29,16 +33,15 @@ public partial class WhiteboardWindow : Window
     private readonly NetworkService _networkService;
     private double _zoom = 1.0;
 
+    // Track shapes by id for resizing
+    private readonly Dictionary<string, FrameworkElement> _shapeElements = new();
+
     public WhiteboardWindow(NetworkService networkService)
     {
         InitializeComponent();
         _networkService = networkService;
     }
 
-    /// <summary>
-    /// Called by NetworkService when a whiteboard message arrives from Android.
-    /// Must be invoked on UI thread.
-    /// </summary>
     public void HandleWhiteboardMessage(string json)
     {
         try
@@ -48,56 +51,192 @@ public partial class WhiteboardWindow : Window
 
             if (type == "wb-stroke")
             {
-                var pointsEl = doc.RootElement.GetProperty("points");
-                var points = new List<Point>();
-                foreach (var pt in pointsEl.EnumerateArray())
-                {
-                    points.Add(new Point(pt.GetProperty("x").GetDouble(), pt.GetProperty("y").GetDouble()));
-                }
-
+                var points = ParsePoints(doc.RootElement.GetProperty("points"));
                 var width = doc.RootElement.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
-                var colorVal = doc.RootElement.TryGetProperty("color", out var cEl) ? (ulong)cEl.GetInt64() : 0xFFFFFFFF;
-
-                var a = (byte)((colorVal >> 24) & 0xFF);
-                var r = (byte)((colorVal >> 16) & 0xFF);
-                var g = (byte)((colorVal >> 8) & 0xFF);
-                var b = (byte)(colorVal & 0xFF);
-
-                DrawStroke(points, Color.FromArgb(a, r, g, b), width);
+                var color = ParseColor(doc.RootElement, "color", 0xFFFFFFFF);
+                DrawStroke(points, color, width, doc.RootElement.TryGetProperty("id", out var idEl) ? idEl.GetString() : null);
+            }
+            else if (type == "wb-shape")
+            {
+                HandleShape(doc.RootElement);
+            }
+            else if (type == "wb-erase")
+            {
+                var id = doc.RootElement.GetProperty("id").GetString();
+                EraseById(id);
             }
             else if (type == "wb-clear")
             {
                 WhiteboardCanvas.Children.Clear();
+                _shapeElements.Clear();
             }
+            else if (type == "wb-image")
+            {
+                HandleIncomingImage(doc.RootElement);
+            }
+            else if (type == "wb-resync-begin")
+            {
+                WhiteboardCanvas.Children.Clear();
+                _shapeElements.Clear();
+            }
+            // wb-resync-end is a no-op, strokes/shapes arrive between begin/end
         }
         catch { }
     }
 
-    private void DrawStroke(List<Point> points, Color color, double width)
+    private List<Point> ParsePoints(JsonElement pointsEl)
+    {
+        var points = new List<Point>();
+        foreach (var pt in pointsEl.EnumerateArray())
+            points.Add(new Point(pt.GetProperty("x").GetDouble(), pt.GetProperty("y").GetDouble()));
+        return points;
+    }
+
+    private Color ParseColor(JsonElement el, string prop, ulong fallback)
+    {
+        ulong val_ = el.TryGetProperty(prop, out var cEl) ? (ulong)cEl.GetInt64() : fallback;
+        return Color.FromArgb((byte)((val_ >> 24) & 0xFF), (byte)((val_ >> 16) & 0xFF),
+            (byte)((val_ >> 8) & 0xFF), (byte)(val_ & 0xFF));
+    }
+
+    private void DrawStroke(List<Point> points, Color color, double width, string? id)
     {
         if (points.Count < 2) return;
-
         var polyline = new Polyline
         {
             Stroke = new SolidColorBrush(color),
             StrokeThickness = width,
             StrokeLineJoin = PenLineJoin.Round,
             StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round
+            StrokeEndLineCap = PenLineCap.Round,
+            Tag = id
         };
-
-        foreach (var pt in points)
-            polyline.Points.Add(pt);
-
+        foreach (var pt in points) polyline.Points.Add(pt);
         WhiteboardCanvas.Children.Add(polyline);
+    }
+
+    private void HandleShape(JsonElement el)
+    {
+        var id = el.GetProperty("id").GetString()!;
+        var kind = el.GetProperty("kind").GetString();
+        var x1 = el.GetProperty("x1").GetDouble();
+        var y1 = el.GetProperty("y1").GetDouble();
+        var x2 = el.GetProperty("x2").GetDouble();
+        var y2 = el.GetProperty("y2").GetDouble();
+        var strokeColor = ParseColor(el, "strokeColor", 0xFFFFFFFF);
+        var fillColorVal = el.TryGetProperty("fillColor", out var fcEl) ? (ulong)fcEl.GetInt64() : 0;
+        var fillColor = fillColorVal == 0
+            ? System.Windows.Media.Brushes.Transparent
+            : new SolidColorBrush(Color.FromArgb((byte)((fillColorVal >> 24) & 0xFF), (byte)((fillColorVal >> 16) & 0xFF),
+                (byte)((fillColorVal >> 8) & 0xFF), (byte)(fillColorVal & 0xFF)));
+        var sw = el.TryGetProperty("strokeWidth", out var swEl) ? swEl.GetDouble() : 4.0;
+
+        // Remove old version if exists
+        EraseById(id);
+
+        FrameworkElement shape;
+        switch (kind)
+        {
+            case "rect":
+                var rect = new Rectangle
+                {
+                    Width = Math.Abs(x2 - x1),
+                    Height = Math.Abs(y2 - y1),
+                    Stroke = new SolidColorBrush(strokeColor),
+                    StrokeThickness = sw,
+                    Fill = fillColor,
+                    Tag = id
+                };
+                Canvas.SetLeft(rect, Math.Min(x1, x2));
+                Canvas.SetTop(rect, Math.Min(y1, y2));
+                shape = rect;
+                break;
+            case "circle":
+                var ell = new Ellipse
+                {
+                    Width = Math.Abs(x2 - x1),
+                    Height = Math.Abs(y2 - y1),
+                    Stroke = new SolidColorBrush(strokeColor),
+                    StrokeThickness = sw,
+                    Fill = fillColor,
+                    Tag = id
+                };
+                Canvas.SetLeft(ell, Math.Min(x1, x2));
+                Canvas.SetTop(ell, Math.Min(y1, y2));
+                shape = ell;
+                break;
+            case "line":
+            default:
+                var line = new Line
+                {
+                    X1 = x1, Y1 = y1, X2 = x2, Y2 = y2,
+                    Stroke = new SolidColorBrush(strokeColor),
+                    StrokeThickness = sw,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                    Tag = id
+                };
+                shape = line;
+                break;
+        }
+
+        WhiteboardCanvas.Children.Add(shape);
+        _shapeElements[id] = shape;
+
+        // Make shapes draggable and resizable on PC
+        MakeDraggable(shape);
+        MakeResizable(shape);
+    }
+
+    private void EraseById(string? id)
+    {
+        if (id == null) return;
+        var toRemove = WhiteboardCanvas.Children.OfType<FrameworkElement>().Where(e => (e.Tag as string) == id).ToList();
+        foreach (var el in toRemove) WhiteboardCanvas.Children.Remove(el);
+        _shapeElements.Remove(id);
+    }
+
+    private void HandleIncomingImage(JsonElement el)
+    {
+        try
+        {
+            var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() : $"img_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+            var x = el.TryGetProperty("x", out var xEl) ? xEl.GetDouble() : 100;
+            var y = el.TryGetProperty("y", out var yEl) ? yEl.GetDouble() : 100;
+            var w = el.TryGetProperty("w", out var wEl) ? wEl.GetDouble() : 400;
+            var h = el.TryGetProperty("h", out var hEl) ? hEl.GetDouble() : 300;
+            var data = el.GetProperty("data").GetString();
+
+            var bytes = Convert.FromBase64String(data!);
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.StreamSource = new MemoryStream(bytes);
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            EraseById(id);
+
+            var image = new Image
+            {
+                Source = bitmap,
+                Width = w,
+                Height = h,
+                Stretch = Stretch.Fill,
+                Tag = id
+            };
+            Canvas.SetLeft(image, x);
+            Canvas.SetTop(image, y);
+            WhiteboardCanvas.Children.Add(image);
+            MakeDraggable(image);
+            MakeResizable(image);
+        }
+        catch { }
     }
 
     private void OnAddImage(object sender, RoutedEventArgs e)
     {
-        var dlg = new OpenFileDialog
-        {
-            Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp"
-        };
+        var dlg = new OpenFileDialog { Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp" };
         if (dlg.ShowDialog() == true)
         {
             AddImageToCanvas(dlg.FileName, 100, 100);
@@ -115,27 +254,56 @@ public partial class WhiteboardWindow : Window
             bitmap.EndInit();
             bitmap.Freeze();
 
+            var w = Math.Min(bitmap.PixelWidth, 600.0);
+            var h = w * bitmap.PixelHeight / bitmap.PixelWidth;
+
             var image = new Image
             {
                 Source = bitmap,
-                Width = Math.Min(bitmap.PixelWidth, 600),
-                Stretch = Stretch.Uniform
+                Width = w,
+                Height = h,
+                Stretch = Stretch.Fill
             };
+
+            var id = $"img_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{Random.Shared.Next(10000)}";
+            image.Tag = id;
 
             Canvas.SetLeft(image, x);
             Canvas.SetTop(image, y);
             WhiteboardCanvas.Children.Add(image);
 
-            // Make draggable & resizable
             MakeDraggable(image);
             MakeResizable(image);
+
+            // Send image to tablet
+            SendImageToTablet(filePath, id, x, y, w, h);
+        }
+        catch { }
+    }
+
+    private void SendImageToTablet(string filePath, string id, double x, double y, double w, double h)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(filePath);
+            var b64 = Convert.ToBase64String(bytes);
+            var msg = JsonSerializer.Serialize(new
+            {
+                type = "wb-image",
+                id,
+                x,
+                y,
+                w,
+                h,
+                data = b64
+            });
+            _ = _networkService.BroadcastJsonAsync(msg);
         }
         catch { }
     }
 
     private void OnAddLink(object sender, RoutedEventArgs e)
     {
-        // Simple input dialog using WPF
         var dlg = new Window
         {
             Title = "Add Link",
@@ -185,7 +353,6 @@ public partial class WhiteboardWindow : Window
             Canvas.SetLeft(border, 200);
             Canvas.SetTop(border, 200);
             WhiteboardCanvas.Children.Add(border);
-
             MakeDraggable(border);
         }
     }
@@ -193,7 +360,7 @@ public partial class WhiteboardWindow : Window
     private void OnClear(object sender, RoutedEventArgs e)
     {
         WhiteboardCanvas.Children.Clear();
-        // Notify Android
+        _shapeElements.Clear();
         var msg = JsonSerializer.Serialize(new { type = "wb-clear" });
         _ = _networkService.BroadcastJsonAsync(msg);
     }
@@ -243,31 +410,20 @@ public partial class WhiteboardWindow : Window
         };
     }
 
-    // Resize support for images
-    private void MakeResizable(Image image)
+    private void MakeResizable(FrameworkElement element)
     {
-        image.MouseRightButtonDown += (s, e) =>
-        {
-            // Toggle between original size and 300px width
-            if (image.Width > 300)
-                image.Width = 300;
-            else
-                image.Width = 600;
-            e.Handled = true;
-        };
-
-        // Mouse wheel on image to resize
-        image.MouseWheel += (s, e) =>
+        element.MouseWheel += (s, e) =>
         {
             var factor = e.Delta > 0 ? 1.1 : 0.9;
-            image.Width = Math.Max(50, Math.Min(2000, image.Width * factor));
+            element.Width = Math.Max(20, Math.Min(3000, element.Width * factor));
+            if (!double.IsNaN(element.Height))
+                element.Height = Math.Max(20, Math.Min(3000, element.Height * factor));
             e.Handled = true;
         };
     }
 
     private void OnCanvasMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        // Ctrl+wheel to zoom the whole canvas
         if (Keyboard.Modifiers == ModifierKeys.Control)
         {
             var factor = e.Delta > 0 ? 1.1 : 0.9;
@@ -290,7 +446,7 @@ public partial class WhiteboardWindow : Window
                 if (ext is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp")
                 {
                     AddImageToCanvas(file, pos.X, pos.Y);
-                    pos = new Point(pos.X + 20, pos.Y + 20); // offset stacked images
+                    pos = new Point(pos.X + 20, pos.Y + 20);
                 }
             }
         }
