@@ -2,10 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
@@ -26,13 +29,23 @@ using Path = System.IO.Path;
 using Rectangle = System.Windows.Shapes.Rectangle;
 using Ellipse = System.Windows.Shapes.Ellipse;
 using Line = System.Windows.Shapes.Line;
+using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 
 namespace Inkbridge.Windows;
 
 public partial class WhiteboardWindow : Window
 {
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
     private readonly NetworkService _networkService;
     private double _zoom = 1.0;
+
+    // Pan mode state
+    private bool _isPanMode;
+    private Point _panMouseStart;
+    private double _panScrollStartX, _panScrollStartY;
 
     // Track shapes by id for resizing
     private readonly Dictionary<string, FrameworkElement> _shapeElements = new();
@@ -44,6 +57,12 @@ public partial class WhiteboardWindow : Window
     {
         InitializeComponent();
         _networkService = networkService;
+        Loaded += (_, _) =>
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            int dark = 1;
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
+        };
     }
 
     public void HandleWhiteboardMessage(string json)
@@ -928,6 +947,42 @@ public partial class WhiteboardWindow : Window
     private void OnDragOver(object sender, DragEventArgs e)
     {
         e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnPanToggle(object sender, RoutedEventArgs e)
+    {
+        _isPanMode = PanToggle.IsChecked == true;
+        ScrollHost.Cursor = _isPanMode ? Cursors.Hand : null;
+    }
+
+    private void OnScrollHostMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isPanMode || e.ChangedButton != MouseButton.Left) return;
+        _panMouseStart = e.GetPosition(ScrollHost);
+        _panScrollStartX = ScrollHost.HorizontalOffset;
+        _panScrollStartY = ScrollHost.VerticalOffset;
+        ScrollHost.CaptureMouse();
+        ScrollHost.Cursor = Cursors.SizeAll;
+        e.Handled = true;
+    }
+
+    private void OnScrollHostMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isPanMode || e.LeftButton != MouseButtonState.Pressed || !ScrollHost.IsMouseCaptured) return;
+        var pos = e.GetPosition(ScrollHost);
+        var dx = pos.X - _panMouseStart.X;
+        var dy = pos.Y - _panMouseStart.Y;
+        ScrollHost.ScrollToHorizontalOffset(_panScrollStartX - dx);
+        ScrollHost.ScrollToVerticalOffset(_panScrollStartY - dy);
+        e.Handled = true;
+    }
+
+    private void OnScrollHostMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isPanMode || e.ChangedButton != MouseButton.Left || !ScrollHost.IsMouseCaptured) return;
+        ScrollHost.ReleaseMouseCapture();
+        ScrollHost.Cursor = Cursors.Hand;
         e.Handled = true;
     }
 }

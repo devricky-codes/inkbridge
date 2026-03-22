@@ -50,7 +50,7 @@ import kotlin.math.sqrt
 /** Convert an ARGB Long (whether sign-extended from local palette or unsigned from PC) to Compose Color via @ColorInt. */
 private fun argbColor(c: Long): Color = Color(c.toInt())
 
-enum class WbTool { Pen, Eraser, Rect, Circle, Line }
+enum class WbTool { Pen, Eraser, Hand, Rect, Circle, Line }
 
 data class WbStroke(
     val id: String,
@@ -118,6 +118,7 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
     var prevPinchDist by remember { mutableFloatStateOf(0f) }
     var prevPinchMid by remember { mutableStateOf(Offset.Zero) }
     var isPinching by remember { mutableStateOf(false) }
+    var handDragLast by remember { mutableStateOf(Offset.Zero) }
 
     // Tablet is busy flag — when true, ignore PC messages
     var tabletBusy by remember { mutableStateOf(false) }
@@ -258,6 +259,7 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
         ) {
             ToolBtn("✏️", activeTool == WbTool.Pen) { activeTool = WbTool.Pen }
             ToolBtn("🧹", activeTool == WbTool.Eraser) { activeTool = WbTool.Eraser }
+            ToolBtn("🤚", activeTool == WbTool.Hand) { activeTool = WbTool.Hand }
             Spacer(Modifier.width(8.dp))
             ToolBtn("▭", activeTool == WbTool.Rect) { activeTool = WbTool.Rect }
             ToolBtn("◯", activeTool == WbTool.Circle) { activeTool = WbTool.Circle }
@@ -366,6 +368,16 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                         val cy = (event.y - panY) / zoom
 
                         when (activeTool) {
+                            WbTool.Hand -> when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> { handDragLast = Offset(event.x, event.y) }
+                                MotionEvent.ACTION_MOVE -> {
+                                    panX += event.x - handDragLast.x
+                                    panY += event.y - handDragLast.y
+                                    handDragLast = Offset(event.x, event.y)
+                                }
+                                else -> {}
+                            }
+
                             WbTool.Pen -> handlePen(event, cx, cy, penColor, penWidth,
                                 { currentStrokeId = it }, { currentPoints = it },
                                 currentPoints, currentStrokeId,

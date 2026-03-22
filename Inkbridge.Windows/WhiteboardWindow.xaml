@@ -13,6 +13,9 @@
         <!-- Toolbar -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="8,4"
                     HorizontalAlignment="Right">
+            <ToggleButton x:Name="PanToggle" Content="🤚 Pan" Margin="4,0,12,0"
+                          Background="#222" Foreground="#AAD" BorderBrush="#446"
+                          Padding="10,4" Click="OnPanToggle"/>
             <Button Content="Add Image" Click="OnAddImage" Margin="4,0"
                     Background="#222" Foreground="#AAA" BorderBrush="#333"
                     Padding="10,4"/>
@@ -36,7 +39,10 @@
         <!-- Canvas with scroll/zoom -->
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto"
                       VerticalScrollBarVisibility="Auto" Background="#0A0A0A"
-                      x:Name="ScrollHost">
+                      x:Name="ScrollHost"
+                      PreviewMouseDown="OnScrollHostMouseDown"
+                      PreviewMouseMove="OnScrollHostMouseMove"
+                      PreviewMouseUp="OnScrollHostMouseUp">
             <Canvas x:Name="WhiteboardCanvas" Width="4000" Height="4000"
                     Background="#0A0A0A"
                     MouseWheel="OnCanvasMouseWheel">
