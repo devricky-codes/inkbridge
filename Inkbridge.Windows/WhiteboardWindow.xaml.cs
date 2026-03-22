@@ -294,6 +294,16 @@ public partial class WhiteboardWindow : Window
     {
         try
         {
+            // Check file size — reject if larger than 10MB
+            var fileInfo = new System.IO.FileInfo(filePath);
+            if (fileInfo.Length > 10 * 1024 * 1024)
+            {
+                System.Windows.MessageBox.Show(
+                    $"Image is too large ({fileInfo.Length / (1024 * 1024)}MB).\nMaximum allowed size is 10MB.",
+                    "Image Too Large", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
             bitmap.UriSource = new Uri(filePath);
@@ -571,7 +581,7 @@ public partial class WhiteboardWindow : Window
         File.WriteAllText(dlg.FileName, json);
     }
 
-    private void OnLoad(object sender, RoutedEventArgs e)
+    private async void OnLoad(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog
         {
@@ -585,6 +595,9 @@ public partial class WhiteboardWindow : Window
         WhiteboardCanvas.Children.Clear();
         _shapeElements.Clear();
 
+        // Clear tablet
+        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-clear" }));
+
         foreach (var el in doc.RootElement.EnumerateArray())
         {
             var elType = el.GetProperty("elementType").GetString();
@@ -597,16 +610,46 @@ public partial class WhiteboardWindow : Window
                     var width = el.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
                     var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                     DrawStroke(points, color, width, id);
+                    // Broadcast stroke to tablet
+                    var colorVal = ((ulong)color.A << 24) | ((ulong)color.R << 16) | ((ulong)color.G << 8) | color.B;
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-stroke", id,
+                        points = points.Select(p => new { x = p.X, y = p.Y }),
+                        color = colorVal, width
+                    }));
                     break;
                 }
                 case "shape":
                 {
                     HandleShape(el);
+                    // Broadcast shape to tablet using the same JSON fields
+                    var shapeId = el.GetProperty("id").GetString();
+                    var kind = el.GetProperty("kind").GetString();
+                    var sx1 = el.GetProperty("x1").GetDouble();
+                    var sy1 = el.GetProperty("y1").GetDouble();
+                    var sx2 = el.GetProperty("x2").GetDouble();
+                    var sy2 = el.GetProperty("y2").GetDouble();
+                    var sc = el.TryGetProperty("strokeColor", out var scEl) ? scEl.GetUInt64() : 0xFFFFFFFFUL;
+                    var fc = el.TryGetProperty("fillColor", out var fcEl) ? fcEl.GetUInt64() : 0UL;
+                    var sw = el.TryGetProperty("strokeWidth", out var swEl) ? swEl.GetDouble() : 4.0;
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-shape", id = shapeId, kind,
+                        x1 = sx1, y1 = sy1, x2 = sx2, y2 = sy2,
+                        strokeColor = sc, fillColor = fc, strokeWidth = sw
+                    }));
                     break;
                 }
                 case "image":
                 {
                     HandleIncomingImage(el);
+                    // Send image to tablet via chunked transfer
+                    var imgData = el.GetProperty("data").GetString() ?? "";
+                    var imgId = el.TryGetProperty("id", out var iid) ? iid.GetString() ?? "" : "";
+                    var imgX = el.TryGetProperty("x", out var ix) ? ix.GetDouble() : 100;
+                    var imgY = el.TryGetProperty("y", out var iy) ? iy.GetDouble() : 100;
+                    var imgW = el.TryGetProperty("w", out var iw) ? iw.GetDouble() : 400;
+                    var imgH = el.TryGetProperty("h", out var ih) ? ih.GetDouble() : 300;
+                    await SendBase64ImageToTablet(imgId, imgX, imgY, imgW, imgH, imgData);
                     break;
                 }
                 case "link":
@@ -646,6 +689,32 @@ public partial class WhiteboardWindow : Window
                 }
             }
         }
+    }
+
+    private async Task SendBase64ImageToTablet(string id, double x, double y, double w, double h, string b64)
+    {
+        const int chunkSize = 200_000;
+        var totalChunks = (int)Math.Ceiling((double)b64.Length / chunkSize);
+
+        SendingOverlay.Visibility = Visibility.Visible;
+        SendingLabel.Text = "Sending image...";
+        SendingProgress.Value = 0;
+
+        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-image-begin", id, x, y, w, h, totalChunks }));
+
+        for (int i = 0; i < totalChunks; i++)
+        {
+            var start = i * chunkSize;
+            var length = Math.Min(chunkSize, b64.Length - start);
+            var chunkData = b64.Substring(start, length);
+            await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-image-chunk", id, index = i, data = chunkData }));
+            SendingProgress.Value = (int)((i + 1) * 100.0 / totalChunks);
+            SendingLabel.Text = $"Sending image... {i + 1}/{totalChunks}";
+            await Task.Delay(10);
+        }
+
+        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-image-end", id }));
+        SendingOverlay.Visibility = Visibility.Collapsed;
     }
 
     private void OnClear(object sender, RoutedEventArgs e)

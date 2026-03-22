@@ -472,14 +472,48 @@ private val PALETTE = listOf(
 
 @Composable
 private fun ColorRow(current: Long, onPick: (Long) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-        PALETTE.forEach { c ->
-            Box(
-                Modifier.size(32.dp).padding(2.dp)
-                    .background(Color(c), CircleShape)
-                    .border(if (c == current) 2.dp else 0.dp, Color.White, CircleShape)
-                    .clickable { onPick(c) }
+    var hexText by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Row {
+            PALETTE.forEach { c ->
+                Box(
+                    Modifier.size(32.dp).padding(2.dp)
+                        .background(Color(c), CircleShape)
+                        .border(if (c == current) 2.dp else 0.dp, Color.White, CircleShape)
+                        .clickable { onPick(c) }
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+            Text("#", color = Color.Gray, fontSize = 14.sp)
+            OutlinedTextField(
+                value = hexText,
+                onValueChange = { hexText = it.take(8) },
+                modifier = Modifier.width(140.dp).height(44.dp),
+                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                singleLine = true,
+                placeholder = { Text("RRGGBB or AARRGGBB", color = Color(0xFF555555), fontSize = 11.sp) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF4488FF),
+                    unfocusedBorderColor = Color(0xFF444444),
+                    cursorColor = Color.White
+                )
             )
+            Spacer(Modifier.width(6.dp))
+            TextButton(onClick = {
+                val hex = hexText.trim().removePrefix("#")
+                val parsed = when (hex.length) {
+                    6 -> 0xFF000000L or (hex.toLongOrNull(16) ?: return@TextButton)
+                    8 -> hex.toLongOrNull(16) ?: return@TextButton
+                    else -> return@TextButton
+                }
+                onPick(parsed)
+            }) {
+                Text("Apply", color = Color(0xFF4488FF), fontSize = 13.sp)
+            }
+            // Preview of current color
+            Spacer(Modifier.width(4.dp))
+            Box(Modifier.size(24.dp).background(Color(current), CircleShape).border(1.dp, Color.Gray, CircleShape))
         }
     }
 }
