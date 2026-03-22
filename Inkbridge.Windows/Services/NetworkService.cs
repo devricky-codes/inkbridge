@@ -26,6 +26,8 @@ public class NetworkService : BackgroundService
         _pointerInjector = pointerInjector;
     }
 
+    public Action<string>? OnWhiteboardMessage { get; set; }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Start mDNS
@@ -149,6 +151,10 @@ public class NetworkService : BackgroundService
                             else if (type == "undo")
                             {
                                 _textInjector.Undo();
+                            }
+                            else if (type != null && type.StartsWith("wb-"))
+                            {
+                                OnWhiteboardMessage?.Invoke(message);
                             }
                         }
                     }

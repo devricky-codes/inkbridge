@@ -28,6 +28,8 @@ class InkbridgeWebSocketClient {
     private val _frames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     val frames: SharedFlow<ByteArray> = _frames
 
+    var onWhiteboardMessage: ((String) -> Unit)? = null
+
     fun connect(url: String) {
         lastUrl = url
         _connectionState.value = ConnectionState.Connecting
@@ -39,6 +41,9 @@ class InkbridgeWebSocketClient {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (text.contains("\"wb-")) {
+                    onWhiteboardMessage?.invoke(text)
+                }
                 _messages.tryEmit(text)
             }
 

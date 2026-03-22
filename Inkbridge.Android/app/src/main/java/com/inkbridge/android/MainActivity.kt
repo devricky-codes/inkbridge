@@ -19,9 +19,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.inkbridge.android.ui.CanvasMirrorMode
 import com.inkbridge.android.ui.TextInjectMode
+import com.inkbridge.android.ui.WhiteboardMode
 import com.inkbridge.android.ui.theme.InkbridgeTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import org.json.JSONObject
@@ -74,6 +75,16 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
         }
     }
 
+    // Auto-reconnect on failure/disconnect (retry every 3s)
+    LaunchedEffect(connectionState) {
+        if (connectionState == ConnectionState.Failed || connectionState == ConnectionState.Disconnected) {
+            if (targetUrl != null) {
+                delay(3000)
+                wsClient.reconnect()
+            }
+        }
+    }
+
     // Listen for focus messages
     LaunchedEffect(Unit) {
         wsClient.messages.onEach { msg ->
@@ -84,7 +95,7 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
                     focusedTitle = json.optString("window", "Unknown")
                     injectMethod = json.optString("method", "-")
                 }
-            } catch (e: Exception) {}
+            } catch (_: Exception) {}
         }.launchIn(this)
     }
 
@@ -100,9 +111,11 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
             when (connectionState) {
                 ConnectionState.Connected -> Text("● Connected to $targetUrl", color = Color(0xFF4CAF50), fontSize = 13.sp)
                 ConnectionState.Connecting -> Text("Connecting to $targetUrl…", color = Color(0xFFFFAA00), fontSize = 13.sp)
-                ConnectionState.Failed -> Text("✖ Connection failed – check IP & firewall", color = Color(0xFFFF5252), fontSize = 13.sp)
+                ConnectionState.Failed -> Text("● Reconnecting…", color = Color(0xFFFF5252), fontSize = 13.sp)
                 ConnectionState.Disconnected -> Text(
-                    if (autoIp == null) "Scanning for Inkbridge PC…" else "Found PC – tap Connect",
+                    if (targetUrl != null) "● Reconnecting…"
+                    else if (autoIp == null) "Scanning for Inkbridge PC…"
+                    else "Found PC – tap Connect",
                     color = Color(0xFFFFAA00), fontSize = 13.sp
                 )
             }
@@ -170,17 +183,16 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
                 Text("inkbridge text", color = if (mode == "text") Color.White else Color.DarkGray)
             }
             Text("|", color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
-            TextButton(onClick = { mode = "draw" }) {
-                Text("canvas mirror", color = if (mode == "draw") Color.White else Color.DarkGray)
+            TextButton(onClick = { mode = "whiteboard" }) {
+                Text("whiteboard", color = if (mode == "whiteboard") Color.White else Color.DarkGray)
             }
         }
 
         Divider(color = Color(0xFF222222), thickness = 0.5.dp)
 
-        if (mode == "text") {
-            TextInjectMode(wsClient, focusedApp, focusedTitle, injectMethod)
-        } else {
-            CanvasMirrorMode(wsClient, focusedApp)
+        when (mode) {
+            "text" -> TextInjectMode(wsClient, focusedApp, focusedTitle, injectMethod)
+            "whiteboard" -> WhiteboardMode(wsClient)
         }
     }
 }

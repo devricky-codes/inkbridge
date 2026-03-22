@@ -1,0 +1,40 @@
+<Window x:Class="Inkbridge.Windows.WhiteboardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Inkbridge Whiteboard" Height="720" Width="1080"
+        Background="#0A0A0A" AllowDrop="True"
+        Drop="OnDrop" DragOver="OnDragOver">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="8,4"
+                    HorizontalAlignment="Right">
+            <Button Content="Add Image" Click="OnAddImage" Margin="4,0"
+                    Background="#222" Foreground="#AAA" BorderBrush="#333"
+                    Padding="10,4"/>
+            <Button Content="Add Link" Click="OnAddLink" Margin="4,0"
+                    Background="#222" Foreground="#AAA" BorderBrush="#333"
+                    Padding="10,4"/>
+            <Button Content="Clear" Click="OnClear" Margin="4,0"
+                    Background="#222" Foreground="#666" BorderBrush="#333"
+                    Padding="10,4"/>
+        </StackPanel>
+
+        <!-- Canvas with scroll/zoom -->
+        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Auto" Background="#0A0A0A"
+                      x:Name="ScrollHost">
+            <Canvas x:Name="WhiteboardCanvas" Width="4000" Height="4000"
+                    Background="#0A0A0A"
+                    MouseWheel="OnCanvasMouseWheel">
+                <Canvas.LayoutTransform>
+                    <ScaleTransform x:Name="CanvasScale" ScaleX="1" ScaleY="1"/>
+                </Canvas.LayoutTransform>
+            </Canvas>
+        </ScrollViewer>
+    </Grid>
+</Window>

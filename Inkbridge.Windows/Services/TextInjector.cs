@@ -21,6 +21,7 @@ public class TextInjector
     {
         return await Task.Run(() =>
         {
+            string method;
             try
             {
                 var element = AutomationElement.FocusedElement;
@@ -32,7 +33,10 @@ public class TextInjector
                         var valuePattern = element.GetCurrentPattern(ValuePattern.Pattern) as ValuePattern;
                         if (valuePattern != null && !valuePattern.Current.IsReadOnly)
                         {
-                            valuePattern.SetValue(text);
+                            // Append with space instead of replacing
+                            var current = valuePattern.Current.Value ?? "";
+                            var newVal = current.Length > 0 ? current + text + " " : text + " ";
+                            valuePattern.SetValue(newVal);
                             _logger.LogInformation("Injected text using ValuePattern.");
                             return "valuePattern";
                         }
@@ -44,7 +48,7 @@ public class TextInjector
                         var textPattern = element.GetCurrentPattern(TextPattern.Pattern) as TextPattern;
                         if (textPattern != null && textPattern.SupportedTextSelection != SupportedTextSelection.None)
                         {
-                            InjectViaClipboard(text);
+                            InjectViaClipboard(text + " ");
                             return "textPattern";
                         }
                     }
@@ -55,17 +59,22 @@ public class TextInjector
                 _logger.LogWarning($"Automation injection failed: {ex.Message}");
             }
 
-            // 3/4. Fallback SendInput vs Clipboard
+            // 3/4. Fallback SendInput vs Clipboard — press End first, then inject text + space
+            PressKey(VK_END, false);
+            PressKey(VK_END, true);
+
             if (text.Length > 250)
             {
-                InjectViaClipboard(text);
-                return "clipboard";
+                InjectViaClipboard(text + " ");
+                method = "clipboard";
             }
             else
             {
-                InjectViaSendInput(text);
-                return "sendInput";
+                InjectViaSendInput(text + " ");
+                method = "sendInput";
             }
+
+            return method;
         });
     }
 
@@ -138,6 +147,7 @@ public class TextInjector
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const uint KEYEVENTF_UNICODE = 0x0004;
     private const ushort VK_CONTROL = 0x11;
+    private const ushort VK_END = 0x23;
     private const ushort VK_V = 0x56;
     private const ushort VK_Z = 0x5A;
 

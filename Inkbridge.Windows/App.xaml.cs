@@ -11,6 +11,7 @@ public partial class App : System.Windows.Application
 {
     private IHost _host;
     private Hardcodet.Wpf.TaskbarNotification.TaskbarIcon _notifyIcon;
+    private WhiteboardWindow? _whiteboardWindow;
 
     public App()
     {
@@ -27,7 +28,7 @@ public partial class App : System.Windows.Application
             .ConfigureServices((context, services) =>
             {
                 // Register NetworkService as a singleton so it can be injected by concrete type
-                // by both FocusTracker and ScreenCapturer, then wire it as a hosted service too.
+                // by FocusTracker, then wire it as a hosted service too.
                 services.AddSingleton<Inkbridge.Windows.Services.NetworkService>();
                 services.AddHostedService(sp => sp.GetRequiredService<Inkbridge.Windows.Services.NetworkService>());
 
@@ -35,7 +36,6 @@ public partial class App : System.Windows.Application
                 services.AddSingleton<Inkbridge.Windows.Services.PointerInjector>();
 
                 services.AddHostedService<Inkbridge.Windows.Services.FocusTracker>();
-                services.AddHostedService<Inkbridge.Windows.Services.ScreenCapturer>();
             })
             .Build();
     }
@@ -52,6 +52,29 @@ public partial class App : System.Windows.Application
             _notifyIcon.ToolTipText = "Inkbridge — running on port 8765";
 
             var contextMenu = new ContextMenu();
+
+            var whiteboardMenuItem = new MenuItem { Header = "Open Whiteboard" };
+            whiteboardMenuItem.Click += (s, args) =>
+            {
+                if (_whiteboardWindow == null || !_whiteboardWindow.IsLoaded)
+                {
+                    var networkService = _host.Services.GetRequiredService<Inkbridge.Windows.Services.NetworkService>();
+                    _whiteboardWindow = new WhiteboardWindow(networkService);
+                    networkService.OnWhiteboardMessage = msg =>
+                    {
+                        _whiteboardWindow.Dispatcher.Invoke(() => _whiteboardWindow.HandleWhiteboardMessage(msg));
+                    };
+                    _whiteboardWindow.Closed += (s2, e2) =>
+                    {
+                        networkService.OnWhiteboardMessage = null;
+                        _whiteboardWindow = null;
+                    };
+                }
+                _whiteboardWindow.Show();
+                _whiteboardWindow.Activate();
+            };
+            contextMenu.Items.Add(whiteboardMenuItem);
+
             var exitMenuItem = new MenuItem { Header = "Exit Inkbridge" };
             exitMenuItem.Click += async (s, args) =>
             {

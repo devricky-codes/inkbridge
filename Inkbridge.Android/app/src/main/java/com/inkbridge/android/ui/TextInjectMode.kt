@@ -23,6 +23,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.mlkit.vision.digitalink.*
 import com.inkbridge.android.InkbridgeWebSocketClient
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -33,20 +36,47 @@ fun TextInjectMode(
     focusedTitle: String,
     injectMethod: String
 ) {
-    var recognizedText by remember { mutableStateOf("") }
+    var sentLog by remember { mutableStateOf("") }
     val strokePoints = remember { mutableStateListOf<Offset>() }
     val committedPaths = remember { mutableStateListOf<Path>() }
     var inkBuilder by remember { mutableStateOf(Ink.builder()) }
     var strokeBuilder by remember { mutableStateOf(Ink.Stroke.builder()) }
+    var recognizeJob by remember { mutableStateOf<Job?>(null) }
+    val scope = rememberCoroutineScope()
 
     // Initialize ML Kit recognizer (English)
     val recognizer = remember {
         val modelId = DigitalInkRecognitionModelIdentifier.fromLanguageTag("en")!!
         val model = DigitalInkRecognitionModel.builder(modelId).build()
-        // Ensure model is downloaded
         val remoteModelManager = com.google.mlkit.common.model.RemoteModelManager.getInstance()
         remoteModelManager.download(model, com.google.mlkit.common.model.DownloadConditions.Builder().build())
         DigitalInkRecognition.getClient(DigitalInkRecognizerOptions.builder(model).build())
+    }
+
+    // Auto-recognize and send function
+    fun autoRecognizeAndSend() {
+        recognizeJob?.cancel()
+        recognizeJob = scope.launch {
+            // Wait 800ms after last stroke for more writing
+            delay(800)
+            val ink = inkBuilder.build()
+            if (ink.strokes.isEmpty()) return@launch
+            recognizer.recognize(ink).addOnSuccessListener { result ->
+                if (result.candidates.isNotEmpty()) {
+                    val text = result.candidates[0].text
+                    sentLog = if (sentLog.isEmpty()) text else "$sentLog $text"
+                    // Auto-send to PC
+                    val json = JSONObject()
+                    json.put("type", "inject")
+                    json.put("text", text)
+                    wsClient.sendText(json.toString())
+                }
+                // Clear canvas for next word
+                committedPaths.clear()
+                strokePoints.clear()
+                inkBuilder = Ink.builder()
+            }
+        }
     }
 
     Column(
@@ -69,19 +99,19 @@ fun TextInjectMode(
 
         Divider(color = Color.DarkGray, thickness = 0.5.dp)
 
-        // Recognized text display
-        if (recognizedText.isNotEmpty()) {
+        // Sent text log
+        if (sentLog.isNotEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 120.dp)
+                    .heightIn(max = 100.dp)
                     .background(Color(0xFF111111))
-                    .padding(16.dp)
+                    .padding(12.dp)
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    text = recognizedText,
-                    style = TextStyle(color = Color.White, fontSize = 18.sp)
+                    text = sentLog + " |",
+                    style = TextStyle(color = Color(0xFF4CAF50), fontSize = 16.sp)
                 )
             }
             Divider(color = Color.DarkGray, thickness = 0.5.dp)
@@ -95,6 +125,7 @@ fun TextInjectMode(
                 .pointerInteropFilter { event ->
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
+                            recognizeJob?.cancel()
                             strokeBuilder = Ink.Stroke.builder()
                             strokePoints.clear()
                             val x = event.x
@@ -128,28 +159,27 @@ fun TextInjectMode(
                             }
                             committedPaths.add(path)
                             strokePoints.clear()
-                            // Add stroke to ink
                             inkBuilder.addStroke(strokeBuilder.build())
+                            // Auto-recognize after delay
+                            autoRecognizeAndSend()
                             true
                         }
                         else -> false
                     }
                 }
         ) {
-            if (recognizedText.isEmpty() && committedPaths.isEmpty() && strokePoints.isEmpty()) {
+            if (sentLog.isEmpty() && committedPaths.isEmpty() && strokePoints.isEmpty()) {
                 Text(
-                    text = "Write with pen here",
+                    text = "Write with pen — auto-sends to PC",
                     style = TextStyle(color = Color.DarkGray, fontSize = 20.sp),
                     modifier = Modifier.padding(16.dp)
                 )
             }
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                // Draw committed strokes
                 committedPaths.forEach { path ->
                     drawPath(path, Color.White, style = style)
                 }
-                // Draw current stroke
                 if (strokePoints.size > 1) {
                     val currentPath = Path()
                     strokePoints.forEachIndexed { i, pt ->
@@ -166,52 +196,18 @@ fun TextInjectMode(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.End
         ) {
-            Text(
-                text = "${recognizedText.length} chars",
-                style = MaterialTheme.typography.labelMedium
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TextButton(onClick = {
-                    // Recognize handwriting
-                    val ink = inkBuilder.build()
-                    if (ink.strokes.isNotEmpty()) {
-                        recognizer.recognize(ink).addOnSuccessListener { result ->
-                            if (result.candidates.isNotEmpty()) {
-                                recognizedText += result.candidates[0].text
-                            }
-                        }
-                    }
-                    // Clear canvas and reset ink builder for next batch
-                    committedPaths.clear()
-                    strokePoints.clear()
-                    inkBuilder = Ink.builder()
-                }) {
-                    Text("Recognize", color = Color(0xFF4CAF50))
-                }
-                TextButton(onClick = {
-                    recognizedText = ""
-                    committedPaths.clear()
-                    strokePoints.clear()
-                    inkBuilder = Ink.builder()
-                }) {
-                    Text("Clear", color = Color.Gray)
-                }
-                Button(
-                    onClick = {
-                        val json = JSONObject()
-                        json.put("type", "inject")
-                        json.put("text", recognizedText)
-                        wsClient.sendText(json.toString())
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White)
-                ) {
-                    Text("Send to PC", color = Color.Black)
-                }
+            TextButton(onClick = {
+                sentLog = ""
+                committedPaths.clear()
+                strokePoints.clear()
+                inkBuilder = Ink.builder()
+                recognizeJob?.cancel()
+            }) {
+                Text("Clear", color = Color.Gray)
             }
         }
     }
