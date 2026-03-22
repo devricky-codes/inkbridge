@@ -1,0 +1,33 @@
+# Android
+Inkbridge.Android/.gradle/
+Inkbridge.Android/build/
+Inkbridge.Android/app/build/
+Inkbridge.Android/app/release/
+Inkbridge.Android/local.properties
+*.apk
+*.aab
+
+# Windows .NET
+Inkbridge.Windows/bin/
+Inkbridge.Windows/obj/
+Inkbridge.Windows/publish/
+
+# IDE
+.idea/
+.vs/
+*.suo
+*.user
+*.sln.docstates
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+inkbridge-crash.log
+
+# Keystore (keep out of repo)
+*.jks
+*.keystore
