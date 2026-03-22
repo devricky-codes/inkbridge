@@ -57,6 +57,14 @@ public partial class WhiteboardWindow : Window
     {
         InitializeComponent();
         _networkService = networkService;
+
+        // Set window icon from file
+        var icoPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+        if (File.Exists(icoPath))
+        {
+            Icon = new BitmapImage(new Uri(icoPath, UriKind.Absolute));
+        }
+
         Loaded += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(this).Handle;
