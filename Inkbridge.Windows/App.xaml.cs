@@ -48,7 +48,10 @@ public partial class App : System.Windows.Application
             await _host.StartAsync();
 
             _notifyIcon = new Hardcodet.Wpf.TaskbarNotification.TaskbarIcon();
-            _notifyIcon.Icon = System.Drawing.SystemIcons.Application;
+            var icoPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+            _notifyIcon.Icon = System.IO.File.Exists(icoPath)
+                ? new System.Drawing.Icon(icoPath)
+                : System.Drawing.SystemIcons.Application;
             _notifyIcon.ToolTipText = "Inkbridge — running on port 8765";
 
             var contextMenu = new ContextMenu();
