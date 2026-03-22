@@ -735,6 +735,83 @@ public partial class WhiteboardWindow : Window
         _ = _networkService.BroadcastJsonAsync(msg);
     }
 
+    private async void OnSyncToTablet(object sender, RoutedEventArgs e)
+    {
+        // Clear tablet first
+        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-clear" }));
+        await Task.Delay(100);
+
+        foreach (var child in WhiteboardCanvas.Children.OfType<FrameworkElement>().ToList())
+        {
+            try
+            {
+                if (child is Polyline poly)
+                {
+                    var sc = (poly.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                    long colorVal = (long)(((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B);
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-stroke",
+                        id = (child.Tag as string) ?? "",
+                        points = poly.Points.Select(p => new { x = p.X, y = p.Y }),
+                        color = colorVal,
+                        width = poly.StrokeThickness
+                    }));
+                    await Task.Delay(10);
+                }
+                else if (child is Rectangle rect)
+                {
+                    var sc = (rect.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                    var fc = (rect.Fill as SolidColorBrush)?.Color ?? Colors.Transparent;
+                    var x1 = Canvas.GetLeft(rect); var y1 = Canvas.GetTop(rect);
+                    long strokeC = (long)(((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B);
+                    long fillC = (long)(((ulong)fc.A << 24) | ((ulong)fc.R << 16) | ((ulong)fc.G << 8) | fc.B);
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-shape", id = (child.Tag as string) ?? "", kind = "rect",
+                        x1, y1, x2 = x1 + rect.Width, y2 = y1 + rect.Height,
+                        strokeColor = strokeC, fillColor = fillC, strokeWidth = rect.StrokeThickness
+                    }));
+                    await Task.Delay(10);
+                }
+                else if (child is Ellipse ell)
+                {
+                    var sc = (ell.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                    var fc = (ell.Fill as SolidColorBrush)?.Color ?? Colors.Transparent;
+                    var x1 = Canvas.GetLeft(ell); var y1 = Canvas.GetTop(ell);
+                    long strokeC = (long)(((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B);
+                    long fillC = (long)(((ulong)fc.A << 24) | ((ulong)fc.R << 16) | ((ulong)fc.G << 8) | fc.B);
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-shape", id = (child.Tag as string) ?? "", kind = "circle",
+                        x1, y1, x2 = x1 + ell.Width, y2 = y1 + ell.Height,
+                        strokeColor = strokeC, fillColor = fillC, strokeWidth = ell.StrokeThickness
+                    }));
+                    await Task.Delay(10);
+                }
+                else if (child is Line line)
+                {
+                    var sc = (line.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                    long strokeC = (long)(((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B);
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-shape", id = (child.Tag as string) ?? "", kind = "line",
+                        x1 = line.X1, y1 = line.Y1, x2 = line.X2, y2 = line.Y2,
+                        strokeColor = strokeC, fillColor = 0L, strokeWidth = line.StrokeThickness
+                    }));
+                    await Task.Delay(10);
+                }
+                else if (child is Image img && img.Source is BitmapSource bmp)
+                {
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(bmp));
+                    using var ms = new MemoryStream();
+                    encoder.Save(ms);
+                    var b64 = Convert.ToBase64String(ms.ToArray());
+                    var imgId = (child.Tag as string) ?? "";
+                    await SendBase64ImageToTablet(imgId, Canvas.GetLeft(img), Canvas.GetTop(img), img.Width, img.Height, b64);
+                }
+            }
+            catch { }
+        }
+    }
+
     // Drag support
     private bool _isDragging;
     private Point _dragStart;

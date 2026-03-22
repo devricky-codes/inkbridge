@@ -28,6 +28,9 @@
             <Button Content="Clear" Click="OnClear" Margin="4,0"
                     Background="#222" Foreground="#666" BorderBrush="#333"
                     Padding="10,4"/>
+            <Button Content="🔄 Sync to Tablet" Click="OnSyncToTablet" Margin="8,0,4,0"
+                    Background="#2A2A2A" Foreground="#F80" BorderBrush="#F80"
+                    Padding="10,4"/>
         </StackPanel>
 
         <!-- Canvas with scroll/zoom -->
