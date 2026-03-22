@@ -847,6 +847,23 @@ public partial class WhiteboardWindow : Window
 
     private void MakeDraggable(UIElement element)
     {
+        // Right-click context menu to remove
+        var ctxMenu = new ContextMenu();
+        var removeItem = new MenuItem { Header = "Remove" };
+        removeItem.Click += (s, e) =>
+        {
+            var id = (element as FrameworkElement)?.Tag as string;
+            WhiteboardCanvas.Children.Remove(element);
+            if (id != null)
+            {
+                _shapeElements.Remove(id);
+                var msg = JsonSerializer.Serialize(new { type = "wb-erase", id });
+                _ = _networkService.BroadcastJsonAsync(msg);
+            }
+        };
+        ctxMenu.Items.Add(removeItem);
+        element.SetValue(FrameworkElement.ContextMenuProperty, ctxMenu);
+
         element.MouseLeftButtonDown += (s, e) =>
         {
             _isDragging = false;
