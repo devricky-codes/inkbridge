@@ -2,7 +2,10 @@ package com.inkbridge.android.ui
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
+import android.util.Log
 import android.view.MotionEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -79,8 +82,12 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
     val shapes = remember { mutableStateListOf<WbShape>() }
     val images = remember { mutableStateListOf<WbImage>() }
 
+    // Undo history: stores (type, id) of each action for undo
+    val undoStack = remember { mutableStateListOf<Pair<String, String>>() } // ("stroke"/"shape", id)
+
     var currentPoints by remember { mutableStateOf(listOf<Offset>()) }
     var currentStrokeId by remember { mutableStateOf("") }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     // Tool state
     var activeTool by remember { mutableStateOf(WbTool.Pen) }
@@ -112,23 +119,26 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
             if (tabletBusy) return@handler
             try {
                 val obj = JSONObject(json)
-                when (obj.optString("type")) {
+                val type = obj.optString("type")
+                // Parse on background, update UI on main
+                when (type) {
                     "wb-stroke" -> {
                         val id = obj.getString("id")
                         val pts = parsePoints(obj.getJSONArray("points"))
                         val c = obj.optLong("color", 0xFFFFFFFF)
                         val w = obj.optDouble("width", 4.0).toFloat()
-                        strokes.add(WbStroke(id, pts, c, w))
+                        mainHandler.post { strokes.add(WbStroke(id, pts, c, w)) }
                     }
                     "wb-erase" -> {
                         val id = obj.getString("id")
-                        strokes.removeAll { it.id == id }
-                        shapes.removeAll { it.id == id }
+                        mainHandler.post {
+                            strokes.removeAll { it.id == id }
+                            shapes.removeAll { it.id == id }
+                        }
                     }
                     "wb-shape" -> {
                         val s = parseShape(obj)
-                        shapes.removeAll { it.id == s.id }
-                        shapes.add(s)
+                        mainHandler.post { shapes.removeAll { it.id == s.id }; shapes.add(s) }
                     }
                     "wb-image" -> {
                         val id = obj.getString("id")
@@ -141,16 +151,24 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                             val bytes = Base64.decode(b64, Base64.DEFAULT)
                             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                             if (bmp != null) {
-                                images.removeAll { it.id == id }
-                                images.add(WbImage(id, x, y, w, h, bmp))
+                                mainHandler.post {
+                                    images.removeAll { it.id == id }
+                                    images.add(WbImage(id, x, y, w, h, bmp))
+                                }
+                            } else {
+                                Log.e("Inkbridge", "wb-image: bitmap decode failed for id=$id, b64 len=${b64.length}")
                             }
+                        } else {
+                            Log.e("Inkbridge", "wb-image: empty data for id=$id")
                         }
                     }
                     "wb-clear" -> {
-                        strokes.clear(); shapes.clear(); images.clear()
+                        mainHandler.post { strokes.clear(); shapes.clear(); images.clear(); undoStack.clear() }
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e("Inkbridge", "wb message error: ${e.message}")
+            }
         }
     }
 
@@ -205,11 +223,24 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
             )
 
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = {
+                // Undo last action
+                if (undoStack.isNotEmpty()) {
+                    val (kind, id) = undoStack.removeAt(undoStack.lastIndex)
+                    when (kind) {
+                        "stroke" -> strokes.removeAll { it.id == id }
+                        "shape" -> shapes.removeAll { it.id == id }
+                    }
+                    sendErase(webSocketClient, id)
+                }
+            }) {
+                Text("↩", color = if (undoStack.isNotEmpty()) Color(0xFFFFAA00) else Color(0xFF444444), fontSize = 18.sp)
+            }
             TextButton(onClick = { resync(webSocketClient, strokes, shapes, images) }) {
                 Text("Resync", color = Color(0xFF4488FF))
             }
             TextButton(onClick = {
-                strokes.clear(); shapes.clear(); images.clear(); currentPoints = emptyList()
+                strokes.clear(); shapes.clear(); images.clear(); currentPoints = emptyList(); undoStack.clear()
                 val msg = JSONObject().apply { put("type", "wb-clear") }
                 webSocketClient.sendText(msg.toString())
             }) {
@@ -264,7 +295,7 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                             WbTool.Pen -> handlePen(event, cx, cy, penColor, penWidth,
                                 { currentStrokeId = it }, { currentPoints = it },
                                 currentPoints, currentStrokeId,
-                                strokes, webSocketClient, { tabletBusy = it })
+                                strokes, undoStack, webSocketClient, { tabletBusy = it })
 
                             WbTool.Eraser -> handleEraser(event, cx, cy, strokes, shapes, webSocketClient)
 
@@ -282,6 +313,7 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                                             val id = "sh_${System.currentTimeMillis()}_${(Math.random() * 10000).toInt()}"
                                             val shape = WbShape(id, kind, a.x, a.y, d.x, d.y, penColor, shapeFillColor, penWidth)
                                             shapes.add(shape)
+                                            undoStack.add("shape" to id)
                                             sendShape(webSocketClient, shape)
                                         }
                                         shapeAnchor = null; shapeDrag = null; tabletBusy = false
@@ -399,7 +431,8 @@ private fun handlePen(
     penColor: Long, penWidth: Float,
     setStrokeId: (String) -> Unit, setPoints: (List<Offset>) -> Unit,
     currentPoints: List<Offset>, currentStrokeId: String,
-    strokes: MutableList<WbStroke>, ws: InkbridgeWebSocketClient,
+    strokes: MutableList<WbStroke>, undoStack: MutableList<Pair<String, String>>,
+    ws: InkbridgeWebSocketClient,
     setBusy: (Boolean) -> Unit
 ) {
     when (event.actionMasked) {
@@ -414,6 +447,7 @@ private fun handlePen(
             if (pts.size >= 2) {
                 val stroke = WbStroke(currentStrokeId, pts, penColor, penWidth)
                 strokes.add(stroke)
+                undoStack.add("stroke" to currentStrokeId)
                 sendStroke(ws, stroke)
             }
             setPoints(emptyList())

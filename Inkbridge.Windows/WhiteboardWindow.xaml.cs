@@ -21,6 +21,7 @@ using Cursors = System.Windows.Input.Cursors;
 using DataFormats = System.Windows.DataFormats;
 using DragDropEffects = System.Windows.DragDropEffects;
 using OpenFileDialog = Microsoft.Win32.OpenFileDialog;
+using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
 using Path = System.IO.Path;
 using Rectangle = System.Windows.Shapes.Rectangle;
 using Ellipse = System.Windows.Shapes.Ellipse;
@@ -285,8 +286,31 @@ public partial class WhiteboardWindow : Window
     {
         try
         {
-            var bytes = File.ReadAllBytes(filePath);
-            var b64 = Convert.ToBase64String(bytes);
+            // Compress image to JPEG for smaller payload
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.UriSource = new Uri(filePath);
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            // Resize if too large (max 800px wide)
+            var encoder = new JpegBitmapEncoder { QualityLevel = 75 };
+            if (bitmap.PixelWidth > 800)
+            {
+                var scale = 800.0 / bitmap.PixelWidth;
+                var tb = new TransformedBitmap(bitmap, new ScaleTransform(scale, scale));
+                encoder.Frames.Add(BitmapFrame.Create(tb));
+            }
+            else
+            {
+                encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            }
+
+            using var ms = new MemoryStream();
+            encoder.Save(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+
             var msg = JsonSerializer.Serialize(new
             {
                 type = "wb-image",
@@ -299,7 +323,10 @@ public partial class WhiteboardWindow : Window
             });
             _ = _networkService.BroadcastJsonAsync(msg);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"SendImageToTablet error: {ex.Message}");
+        }
     }
 
     private void OnAddLink(object sender, RoutedEventArgs e)
@@ -354,6 +381,187 @@ public partial class WhiteboardWindow : Window
             Canvas.SetTop(border, 200);
             WhiteboardCanvas.Children.Add(border);
             MakeDraggable(border);
+        }
+    }
+
+    private void OnSave(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Filter = "Inkbridge Whiteboard|*.inkboard",
+            DefaultExt = ".inkboard",
+            FileName = $"whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}"
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        var elements = new List<Dictionary<string, object>>();
+
+        foreach (var child in WhiteboardCanvas.Children.OfType<FrameworkElement>())
+        {
+            if (child is Polyline poly)
+            {
+                var pts = poly.Points.Select(p => new { x = p.X, y = p.Y }).ToList();
+                var sc = (poly.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                elements.Add(new Dictionary<string, object>
+                {
+                    ["elementType"] = "stroke",
+                    ["id"] = (child.Tag as string) ?? "",
+                    ["points"] = pts,
+                    ["color"] = ((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B,
+                    ["width"] = poly.StrokeThickness
+                });
+            }
+            else if (child is Rectangle rect)
+            {
+                var sc = (rect.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                var fc = (rect.Fill as SolidColorBrush)?.Color ?? Colors.Transparent;
+                var x1 = Canvas.GetLeft(rect); var y1 = Canvas.GetTop(rect);
+                elements.Add(new Dictionary<string, object>
+                {
+                    ["elementType"] = "shape", ["kind"] = "rect",
+                    ["id"] = (child.Tag as string) ?? "",
+                    ["x1"] = x1, ["y1"] = y1, ["x2"] = x1 + rect.Width, ["y2"] = y1 + rect.Height,
+                    ["strokeColor"] = ((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B,
+                    ["fillColor"] = ((ulong)fc.A << 24) | ((ulong)fc.R << 16) | ((ulong)fc.G << 8) | fc.B,
+                    ["strokeWidth"] = rect.StrokeThickness
+                });
+            }
+            else if (child is Ellipse ell)
+            {
+                var sc = (ell.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                var fc = (ell.Fill as SolidColorBrush)?.Color ?? Colors.Transparent;
+                var x1 = Canvas.GetLeft(ell); var y1 = Canvas.GetTop(ell);
+                elements.Add(new Dictionary<string, object>
+                {
+                    ["elementType"] = "shape", ["kind"] = "circle",
+                    ["id"] = (child.Tag as string) ?? "",
+                    ["x1"] = x1, ["y1"] = y1, ["x2"] = x1 + ell.Width, ["y2"] = y1 + ell.Height,
+                    ["strokeColor"] = ((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B,
+                    ["fillColor"] = ((ulong)fc.A << 24) | ((ulong)fc.R << 16) | ((ulong)fc.G << 8) | fc.B,
+                    ["strokeWidth"] = ell.StrokeThickness
+                });
+            }
+            else if (child is Line line)
+            {
+                var sc = (line.Stroke as SolidColorBrush)?.Color ?? Colors.White;
+                elements.Add(new Dictionary<string, object>
+                {
+                    ["elementType"] = "shape", ["kind"] = "line",
+                    ["id"] = (child.Tag as string) ?? "",
+                    ["x1"] = line.X1, ["y1"] = line.Y1, ["x2"] = line.X2, ["y2"] = line.Y2,
+                    ["strokeColor"] = ((ulong)sc.A << 24) | ((ulong)sc.R << 16) | ((ulong)sc.G << 8) | sc.B,
+                    ["fillColor"] = (ulong)0,
+                    ["strokeWidth"] = line.StrokeThickness
+                });
+            }
+            else if (child is Image img && img.Source is BitmapSource bmp)
+            {
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bmp));
+                using var ms = new MemoryStream();
+                encoder.Save(ms);
+                var b64 = Convert.ToBase64String(ms.ToArray());
+                elements.Add(new Dictionary<string, object>
+                {
+                    ["elementType"] = "image",
+                    ["id"] = (child.Tag as string) ?? "",
+                    ["x"] = Canvas.GetLeft(img),
+                    ["y"] = Canvas.GetTop(img),
+                    ["w"] = img.Width,
+                    ["h"] = img.Height,
+                    ["data"] = b64
+                });
+            }
+            else if (child is Border border && border.Child is TextBlock tb)
+            {
+                elements.Add(new Dictionary<string, object>
+                {
+                    ["elementType"] = "link",
+                    ["url"] = tb.Text,
+                    ["x"] = Canvas.GetLeft(border),
+                    ["y"] = Canvas.GetTop(border)
+                });
+            }
+        }
+
+        var json = JsonSerializer.Serialize(elements, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(dlg.FileName, json);
+    }
+
+    private void OnLoad(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Filter = "Inkbridge Whiteboard|*.inkboard"
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        var json = File.ReadAllText(dlg.FileName);
+        using var doc = JsonDocument.Parse(json);
+
+        WhiteboardCanvas.Children.Clear();
+        _shapeElements.Clear();
+
+        foreach (var el in doc.RootElement.EnumerateArray())
+        {
+            var elType = el.GetProperty("elementType").GetString();
+            switch (elType)
+            {
+                case "stroke":
+                {
+                    var points = ParsePoints(el.GetProperty("points"));
+                    var color = ParseColor(el, "color", 0xFFFFFFFF);
+                    var width = el.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
+                    var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                    DrawStroke(points, color, width, id);
+                    break;
+                }
+                case "shape":
+                {
+                    HandleShape(el);
+                    break;
+                }
+                case "image":
+                {
+                    HandleIncomingImage(el);
+                    break;
+                }
+                case "link":
+                {
+                    var url = el.GetProperty("url").GetString() ?? "";
+                    var x = el.TryGetProperty("x", out var xEl) ? xEl.GetDouble() : 200;
+                    var y = el.TryGetProperty("y", out var yEl) ? yEl.GetDouble() : 200;
+                    var border = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x2E)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x66)),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(6),
+                        Padding = new Thickness(12, 8, 12, 8),
+                        Child = new TextBlock
+                        {
+                            Text = url,
+                            Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x99, 0xFF)),
+                            FontSize = 14,
+                            TextDecorations = TextDecorations.Underline,
+                            Cursor = Cursors.Hand
+                        }
+                    };
+                    var capturedUrl = url;
+                    border.MouseLeftButtonUp += (s, args) =>
+                    {
+                        if (!_isDragging)
+                        {
+                            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(capturedUrl) { UseShellExecute = true }); } catch { }
+                        }
+                    };
+                    Canvas.SetLeft(border, x);
+                    Canvas.SetTop(border, y);
+                    WhiteboardCanvas.Children.Add(border);
+                    MakeDraggable(border);
+                    break;
+                }
+            }
         }
     }
 

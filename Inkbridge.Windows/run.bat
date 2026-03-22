@@ -4,6 +4,9 @@ setlocal
 set "PROJ=%~dp0Inkbridge.Windows.csproj"
 set "EXE=%~dp0publish\Inkbridge.Windows.exe"
 
+:: Kill any existing instance
+taskkill /im Inkbridge.Windows.exe /f >nul 2>&1
+
 :: If --run-only flag is passed, skip build
 if "%1"=="--run-only" goto :launch
 

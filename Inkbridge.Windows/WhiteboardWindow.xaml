@@ -19,6 +19,12 @@
             <Button Content="Add Link" Click="OnAddLink" Margin="4,0"
                     Background="#222" Foreground="#AAA" BorderBrush="#333"
                     Padding="10,4"/>
+            <Button Content="Save" Click="OnSave" Margin="4,0"
+                    Background="#222" Foreground="#6A6" BorderBrush="#333"
+                    Padding="10,4"/>
+            <Button Content="Load" Click="OnLoad" Margin="4,0"
+                    Background="#222" Foreground="#68F" BorderBrush="#333"
+                    Padding="10,4"/>
             <Button Content="Clear" Click="OnClear" Margin="4,0"
                     Background="#222" Foreground="#666" BorderBrush="#333"
                     Padding="10,4"/>
