@@ -37,6 +37,9 @@ public partial class WhiteboardWindow : Window
     // Track shapes by id for resizing
     private readonly Dictionary<string, FrameworkElement> _shapeElements = new();
 
+    // Chunked image receiving
+    private readonly Dictionary<string, (double x, double y, double w, double h, int totalChunks, Dictionary<int, string> chunks)> _imageChunkBuffers = new();
+
     public WhiteboardWindow(NetworkService networkService)
     {
         InitializeComponent();
@@ -74,6 +77,49 @@ public partial class WhiteboardWindow : Window
             else if (type == "wb-image")
             {
                 HandleIncomingImage(doc.RootElement);
+            }
+            else if (type == "wb-image-begin")
+            {
+                var id = doc.RootElement.GetProperty("id").GetString()!;
+                var x = doc.RootElement.TryGetProperty("x", out var xEl) ? xEl.GetDouble() : 100;
+                var y = doc.RootElement.TryGetProperty("y", out var yEl) ? yEl.GetDouble() : 100;
+                var w = doc.RootElement.TryGetProperty("w", out var wEl2) ? wEl2.GetDouble() : 400;
+                var h = doc.RootElement.TryGetProperty("h", out var hEl) ? hEl.GetDouble() : 300;
+                var total = doc.RootElement.GetProperty("totalChunks").GetInt32();
+                _imageChunkBuffers[id] = (x, y, w, h, total, new Dictionary<int, string>());
+            }
+            else if (type == "wb-image-chunk")
+            {
+                var id = doc.RootElement.GetProperty("id").GetString()!;
+                var index = doc.RootElement.GetProperty("index").GetInt32();
+                var data = doc.RootElement.GetProperty("data").GetString()!;
+                if (_imageChunkBuffers.TryGetValue(id, out var buf))
+                    buf.chunks[index] = data;
+            }
+            else if (type == "wb-image-end")
+            {
+                var id = doc.RootElement.GetProperty("id").GetString()!;
+                if (_imageChunkBuffers.Remove(id, out var buf))
+                {
+                    var sb = new System.Text.StringBuilder();
+                    for (int i = 0; i < buf.totalChunks; i++)
+                        sb.Append(buf.chunks.GetValueOrDefault(i, ""));
+                    var b64 = sb.ToString();
+                    var bytes = Convert.FromBase64String(b64);
+                    var bitmap = new BitmapImage();
+                    bitmap.BeginInit();
+                    bitmap.StreamSource = new MemoryStream(bytes);
+                    bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                    bitmap.EndInit();
+                    bitmap.Freeze();
+                    EraseById(id);
+                    var image = new Image { Source = bitmap, Width = buf.w, Height = buf.h, Stretch = Stretch.Fill, Tag = id };
+                    Canvas.SetLeft(image, buf.x);
+                    Canvas.SetTop(image, buf.y);
+                    WhiteboardCanvas.Children.Add(image);
+                    MakeDraggable(image);
+                    MakeResizable(image);
+                }
             }
             else if (type == "wb-resync-begin")
             {
@@ -282,10 +328,15 @@ public partial class WhiteboardWindow : Window
         catch { }
     }
 
-    private void SendImageToTablet(string filePath, string id, double x, double y, double w, double h)
+    private async void SendImageToTablet(string filePath, string id, double x, double y, double w, double h)
     {
         try
         {
+            // Show overlay
+            SendingOverlay.Visibility = Visibility.Visible;
+            SendingLabel.Text = "Sending image...";
+            SendingProgress.Value = 0;
+
             // Compress image to JPEG for smaller payload
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
@@ -294,11 +345,11 @@ public partial class WhiteboardWindow : Window
             bitmap.EndInit();
             bitmap.Freeze();
 
-            // Resize if too large (max 800px wide)
-            var encoder = new JpegBitmapEncoder { QualityLevel = 75 };
-            if (bitmap.PixelWidth > 800)
+            // Resize if too large (max 1600px wide)
+            var encoder = new JpegBitmapEncoder { QualityLevel = 80 };
+            if (bitmap.PixelWidth > 1600)
             {
-                var scale = 800.0 / bitmap.PixelWidth;
+                var scale = 1600.0 / bitmap.PixelWidth;
                 var tb = new TransformedBitmap(bitmap, new ScaleTransform(scale, scale));
                 encoder.Frames.Add(BitmapFrame.Create(tb));
             }
@@ -311,21 +362,53 @@ public partial class WhiteboardWindow : Window
             encoder.Save(ms);
             var b64 = Convert.ToBase64String(ms.ToArray());
 
-            var msg = JsonSerializer.Serialize(new
+            // Chunk the base64 data (200KB chunks)
+            const int chunkSize = 200_000;
+            var totalChunks = (int)Math.Ceiling((double)b64.Length / chunkSize);
+
+            // Send begin message
+            var beginMsg = JsonSerializer.Serialize(new
             {
-                type = "wb-image",
-                id,
-                x,
-                y,
-                w,
-                h,
-                data = b64
+                type = "wb-image-begin",
+                id, x, y, w, h,
+                totalChunks
             });
-            _ = _networkService.BroadcastJsonAsync(msg);
+            await _networkService.BroadcastJsonAsync(beginMsg);
+
+            // Send chunks
+            for (int i = 0; i < totalChunks; i++)
+            {
+                var start = i * chunkSize;
+                var length = Math.Min(chunkSize, b64.Length - start);
+                var chunkData = b64.Substring(start, length);
+
+                var chunkMsg = JsonSerializer.Serialize(new
+                {
+                    type = "wb-image-chunk",
+                    id,
+                    index = i,
+                    data = chunkData
+                });
+                await _networkService.BroadcastJsonAsync(chunkMsg);
+
+                // Update progress
+                SendingProgress.Value = (int)((i + 1) * 100.0 / totalChunks);
+                SendingLabel.Text = $"Sending image... {i + 1}/{totalChunks}";
+
+                // Yield to UI thread
+                await Task.Delay(10);
+            }
+
+            // Send end message
+            var endMsg = JsonSerializer.Serialize(new { type = "wb-image-end", id });
+            await _networkService.BroadcastJsonAsync(endMsg);
+
+            SendingOverlay.Visibility = Visibility.Collapsed;
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"SendImageToTablet error: {ex.Message}");
+            SendingOverlay.Visibility = Visibility.Collapsed;
         }
     }
 

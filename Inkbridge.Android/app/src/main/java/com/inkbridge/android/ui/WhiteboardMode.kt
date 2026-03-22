@@ -73,6 +73,13 @@ data class WbImage(
     val bitmap: Bitmap
 )
 
+data class ImageChunkState(
+    val x: Float, val y: Float,
+    val w: Float, val h: Float,
+    val totalChunks: Int,
+    val chunks: MutableMap<Int, String> = mutableMapOf()
+)
+
 // ── Composable ──
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -111,6 +118,10 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
 
     // Tablet is busy flag — when true, ignore PC messages
     var tabletBusy by remember { mutableStateOf(false) }
+
+    // Chunked image receiving state
+    val imageChunkBuffers = remember { mutableMapOf<String, ImageChunkState>() }
+    var imageLoadingText by remember { mutableStateOf<String?>(null) }
 
     // Listen for incoming messages
     LaunchedEffect(Unit) {
@@ -162,6 +173,52 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                             Log.e("Inkbridge", "wb-image: empty data for id=$id")
                         }
                     }
+                    "wb-image-begin" -> {
+                        val id = obj.getString("id")
+                        val x = obj.optDouble("x", 0.0).toFloat()
+                        val y = obj.optDouble("y", 0.0).toFloat()
+                        val w = obj.optDouble("w", 200.0).toFloat()
+                        val h = obj.optDouble("h", 200.0).toFloat()
+                        val totalChunks = obj.getInt("totalChunks")
+                        imageChunkBuffers[id] = ImageChunkState(x, y, w, h, totalChunks)
+                        mainHandler.post { imageLoadingText = "Receiving image... 0/$totalChunks" }
+                    }
+                    "wb-image-chunk" -> {
+                        val id = obj.getString("id")
+                        val index = obj.getInt("index")
+                        val data = obj.getString("data")
+                        val state = imageChunkBuffers[id]
+                        if (state != null) {
+                            state.chunks[index] = data
+                            val received = state.chunks.size
+                            mainHandler.post { imageLoadingText = "Receiving image... $received/${state.totalChunks}" }
+                        }
+                    }
+                    "wb-image-end" -> {
+                        val id = obj.getString("id")
+                        val state = imageChunkBuffers.remove(id)
+                        if (state != null) {
+                            val b64 = buildString {
+                                for (i in 0 until state.totalChunks) {
+                                    append(state.chunks[i] ?: "")
+                                }
+                            }
+                            val bytes = Base64.decode(b64, Base64.DEFAULT)
+                            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            if (bmp != null) {
+                                mainHandler.post {
+                                    images.removeAll { it.id == id }
+                                    images.add(WbImage(id, state.x, state.y, state.w, state.h, bmp))
+                                    imageLoadingText = null
+                                }
+                            } else {
+                                Log.e("Inkbridge", "wb-image-end: decode failed for id=$id, b64 len=${b64.length}")
+                                mainHandler.post { imageLoadingText = null }
+                            }
+                        } else {
+                            mainHandler.post { imageLoadingText = null }
+                        }
+                    }
                     "wb-image-move" -> {
                         val id = obj.getString("id")
                         val x = obj.optDouble("x", 0.0).toFloat()
@@ -187,6 +244,7 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
 
     DisposableEffect(Unit) { onDispose { webSocketClient.onWhiteboardMessage = null } }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(Color(0xFF0A0A0A))) {
 
         // ── Toolbar row 1: Tools ──
@@ -378,6 +436,16 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
             }
         }
     }
+    // Loading overlay for chunked image receiving
+    if (imageLoadingText != null) {
+        Box(
+            Modifier.fillMaxSize().background(Color(0xCC000000)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(imageLoadingText ?: "", color = Color.White, fontSize = 18.sp)
+        }
+    }
+    } // end Box
 }
 
 // ── Tool button ──
