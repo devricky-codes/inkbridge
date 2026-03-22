@@ -589,105 +589,115 @@ public partial class WhiteboardWindow : Window
         };
         if (dlg.ShowDialog() != true) return;
 
-        var json = File.ReadAllText(dlg.FileName);
-        using var doc = JsonDocument.Parse(json);
-
-        WhiteboardCanvas.Children.Clear();
-        _shapeElements.Clear();
-
-        // Clear tablet
-        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-clear" }));
-
-        foreach (var el in doc.RootElement.EnumerateArray())
+        try
         {
-            var elType = el.GetProperty("elementType").GetString();
-            switch (elType)
+            var json = File.ReadAllText(dlg.FileName);
+            // Parse into a list of raw element dictionaries so we don't hold a JsonDocument across awaits
+            var elements = JsonSerializer.Deserialize<List<JsonElement>>(json) ?? new List<JsonElement>();
+
+            WhiteboardCanvas.Children.Clear();
+            _shapeElements.Clear();
+
+            // Clear tablet and give it time to process
+            await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-clear" }));
+            await Task.Delay(100);
+
+            foreach (var el in elements)
             {
-                case "stroke":
+                var elType = el.GetProperty("elementType").GetString();
+                switch (elType)
                 {
-                    var points = ParsePoints(el.GetProperty("points"));
-                    var color = ParseColor(el, "color", 0xFFFFFFFF);
-                    var width = el.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
-                    var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
-                    DrawStroke(points, color, width, id);
-                    // Broadcast stroke to tablet
-                    var colorVal = ((ulong)color.A << 24) | ((ulong)color.R << 16) | ((ulong)color.G << 8) | color.B;
-                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
-                        type = "wb-stroke", id,
-                        points = points.Select(p => new { x = p.X, y = p.Y }),
-                        color = colorVal, width
-                    }));
-                    break;
-                }
-                case "shape":
-                {
-                    HandleShape(el);
-                    // Broadcast shape to tablet using the same JSON fields
-                    var shapeId = el.GetProperty("id").GetString();
-                    var kind = el.GetProperty("kind").GetString();
-                    var sx1 = el.GetProperty("x1").GetDouble();
-                    var sy1 = el.GetProperty("y1").GetDouble();
-                    var sx2 = el.GetProperty("x2").GetDouble();
-                    var sy2 = el.GetProperty("y2").GetDouble();
-                    var sc = el.TryGetProperty("strokeColor", out var scEl) ? scEl.GetUInt64() : 0xFFFFFFFFUL;
-                    var fc = el.TryGetProperty("fillColor", out var fcEl) ? fcEl.GetUInt64() : 0UL;
-                    var sw = el.TryGetProperty("strokeWidth", out var swEl) ? swEl.GetDouble() : 4.0;
-                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
-                        type = "wb-shape", id = shapeId, kind,
-                        x1 = sx1, y1 = sy1, x2 = sx2, y2 = sy2,
-                        strokeColor = sc, fillColor = fc, strokeWidth = sw
-                    }));
-                    break;
-                }
-                case "image":
-                {
-                    HandleIncomingImage(el);
-                    // Send image to tablet via chunked transfer
-                    var imgData = el.GetProperty("data").GetString() ?? "";
-                    var imgId = el.TryGetProperty("id", out var iid) ? iid.GetString() ?? "" : "";
-                    var imgX = el.TryGetProperty("x", out var ix) ? ix.GetDouble() : 100;
-                    var imgY = el.TryGetProperty("y", out var iy) ? iy.GetDouble() : 100;
-                    var imgW = el.TryGetProperty("w", out var iw) ? iw.GetDouble() : 400;
-                    var imgH = el.TryGetProperty("h", out var ih) ? ih.GetDouble() : 300;
-                    await SendBase64ImageToTablet(imgId, imgX, imgY, imgW, imgH, imgData);
-                    break;
-                }
-                case "link":
-                {
-                    var url = el.GetProperty("url").GetString() ?? "";
-                    var x = el.TryGetProperty("x", out var xEl) ? xEl.GetDouble() : 200;
-                    var y = el.TryGetProperty("y", out var yEl) ? yEl.GetDouble() : 200;
-                    var border = new Border
+                    case "stroke":
                     {
-                        Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x2E)),
-                        BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x66)),
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(6),
-                        Padding = new Thickness(12, 8, 12, 8),
-                        Child = new TextBlock
-                        {
-                            Text = url,
-                            Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x99, 0xFF)),
-                            FontSize = 14,
-                            TextDecorations = TextDecorations.Underline,
-                            Cursor = Cursors.Hand
-                        }
-                    };
-                    var capturedUrl = url;
-                    border.MouseLeftButtonUp += (s, args) =>
+                        var points = ParsePoints(el.GetProperty("points"));
+                        var color = ParseColor(el, "color", 0xFFFFFFFF);
+                        var width = el.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
+                        var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                        DrawStroke(points, color, width, id);
+                        // Broadcast stroke to tablet - use (long) cast so Java/Kotlin can parse as signed long
+                        long colorVal = (long)(((ulong)color.A << 24) | ((ulong)color.R << 16) | ((ulong)color.G << 8) | color.B);
+                        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                            type = "wb-stroke", id,
+                            points = points.Select(p => new { x = p.X, y = p.Y }),
+                            color = colorVal, width
+                        }));
+                        await Task.Delay(10);
+                        break;
+                    }
+                    case "shape":
                     {
-                        if (!_isDragging)
+                        HandleShape(el);
+                        var shapeId = el.TryGetProperty("id", out var sidEl) ? sidEl.GetString() ?? "" : "";
+                        var kind = el.TryGetProperty("kind", out var kEl) ? kEl.GetString() ?? "rect" : "rect";
+                        var sx1 = el.TryGetProperty("x1", out var x1El) ? x1El.GetDouble() : 0;
+                        var sy1 = el.TryGetProperty("y1", out var y1El) ? y1El.GetDouble() : 0;
+                        var sx2 = el.TryGetProperty("x2", out var x2El) ? x2El.GetDouble() : 100;
+                        var sy2 = el.TryGetProperty("y2", out var y2El) ? y2El.GetDouble() : 100;
+                        long sc = el.TryGetProperty("strokeColor", out var scEl) ? scEl.GetInt64() : unchecked((long)0xFFFFFFFF);
+                        long fc = el.TryGetProperty("fillColor", out var fcEl) ? fcEl.GetInt64() : 0L;
+                        var sw = el.TryGetProperty("strokeWidth", out var swEl) ? swEl.GetDouble() : 4.0;
+                        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                            type = "wb-shape", id = shapeId, kind,
+                            x1 = sx1, y1 = sy1, x2 = sx2, y2 = sy2,
+                            strokeColor = sc, fillColor = fc, strokeWidth = sw
+                        }));
+                        await Task.Delay(10);
+                        break;
+                    }
+                    case "image":
+                    {
+                        HandleIncomingImage(el);
+                        var imgData = el.TryGetProperty("data", out var dEl) ? dEl.GetString() ?? "" : "";
+                        var imgId = el.TryGetProperty("id", out var iid) ? iid.GetString() ?? "" : "";
+                        var imgX = el.TryGetProperty("x", out var ix) ? ix.GetDouble() : 100;
+                        var imgY = el.TryGetProperty("y", out var iy) ? iy.GetDouble() : 100;
+                        var imgW = el.TryGetProperty("w", out var iw) ? iw.GetDouble() : 400;
+                        var imgH = el.TryGetProperty("h", out var ih) ? ih.GetDouble() : 300;
+                        if (!string.IsNullOrEmpty(imgData))
+                            await SendBase64ImageToTablet(imgId, imgX, imgY, imgW, imgH, imgData);
+                        break;
+                    }
+                    case "link":
+                    {
+                        var url = el.GetProperty("url").GetString() ?? "";
+                        var x = el.TryGetProperty("x", out var xEl) ? xEl.GetDouble() : 200;
+                        var y = el.TryGetProperty("y", out var yEl) ? yEl.GetDouble() : 200;
+                        var border = new Border
                         {
-                            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(capturedUrl) { UseShellExecute = true }); } catch { }
-                        }
-                    };
-                    Canvas.SetLeft(border, x);
-                    Canvas.SetTop(border, y);
-                    WhiteboardCanvas.Children.Add(border);
-                    MakeDraggable(border);
-                    break;
+                            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x2E)),
+                            BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x66)),
+                            BorderThickness = new Thickness(1),
+                            CornerRadius = new CornerRadius(6),
+                            Padding = new Thickness(12, 8, 12, 8),
+                            Child = new TextBlock
+                            {
+                                Text = url,
+                                Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x99, 0xFF)),
+                                FontSize = 14,
+                                TextDecorations = TextDecorations.Underline,
+                                Cursor = Cursors.Hand
+                            }
+                        };
+                        var capturedUrl = url;
+                        border.MouseLeftButtonUp += (s, args) =>
+                        {
+                            if (!_isDragging)
+                            {
+                                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(capturedUrl) { UseShellExecute = true }); } catch { }
+                            }
+                        };
+                        Canvas.SetLeft(border, x);
+                        Canvas.SetTop(border, y);
+                        WhiteboardCanvas.Children.Add(border);
+                        MakeDraggable(border);
+                        break;
+                    }
                 }
             }
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"Failed to load whiteboard: {ex.Message}", "Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

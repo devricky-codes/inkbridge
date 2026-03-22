@@ -47,6 +47,9 @@ import kotlin.math.sqrt
 
 // ── Data models ──
 
+/** Convert an ARGB Long (whether sign-extended from local palette or unsigned from PC) to Compose Color via @ColorInt. */
+private fun argbColor(c: Long): Color = Color(c.toInt())
+
 enum class WbTool { Pen, Eraser, Rect, Circle, Line }
 
 data class WbStroke(
@@ -425,7 +428,7 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                         moveTo(currentPoints[0].x, currentPoints[0].y)
                         for (i in 1 until currentPoints.size) lineTo(currentPoints[i].x, currentPoints[i].y)
                     }
-                    drawPath(path, Color(penColor), style = Stroke(penWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    drawPath(path, argbColor(penColor), style = Stroke(penWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
 
                 // In-progress shape preview
@@ -476,11 +479,12 @@ private fun ColorRow(current: Long, onPick: (Long) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
         Row {
             PALETTE.forEach { c ->
+                val cl = c.toLong()
                 Box(
                     Modifier.size(32.dp).padding(2.dp)
-                        .background(Color(c), CircleShape)
-                        .border(if (c == current) 2.dp else 0.dp, Color.White, CircleShape)
-                        .clickable { onPick(c) }
+                        .background(argbColor(cl), CircleShape)
+                        .border(if (cl.toInt() == current.toInt()) 2.dp else 0.dp, Color.White, CircleShape)
+                        .clickable { onPick(cl) }
                 )
             }
         }
@@ -513,7 +517,7 @@ private fun ColorRow(current: Long, onPick: (Long) -> Unit) {
             }
             // Preview of current color
             Spacer(Modifier.width(4.dp))
-            Box(Modifier.size(24.dp).background(Color(current), CircleShape).border(1.dp, Color.Gray, CircleShape))
+            Box(Modifier.size(24.dp).background(argbColor(current), CircleShape).border(1.dp, Color.Gray, CircleShape))
         }
     }
 }
@@ -525,15 +529,16 @@ private fun FillColorRow(current: Long, onPick: (Long) -> Unit) {
         Box(
             Modifier.size(32.dp).padding(2.dp)
                 .background(Color(0xFF0A0A0A), CircleShape)
-                .border(if (current.toULong() == 0x00000000UL) 2.dp else 1.dp, Color.Gray, CircleShape)
+                .border(if (current.toInt() == 0) 2.dp else 1.dp, Color.Gray, CircleShape)
                 .clickable { onPick(0x00000000L) }
         ) { Text("∅", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center)) }
         PALETTE.forEach { c ->
+            val cl = c.toLong()
             Box(
                 Modifier.size(32.dp).padding(2.dp)
-                    .background(Color(c), CircleShape)
-                    .border(if (c == current) 2.dp else 0.dp, Color.White, CircleShape)
-                    .clickable { onPick(c) }
+                    .background(argbColor(cl), CircleShape)
+                    .border(if (cl.toInt() == current.toInt()) 2.dp else 0.dp, Color.White, CircleShape)
+                    .clickable { onPick(cl) }
             )
         }
     }
@@ -626,47 +631,47 @@ private fun DrawScope.drawWbStroke(s: WbStroke) {
         moveTo(s.points[0].x, s.points[0].y)
         for (i in 1 until s.points.size) lineTo(s.points[i].x, s.points[i].y)
     }
-    drawPath(path, Color(s.color), style = Stroke(s.width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    drawPath(path, argbColor(s.color), style = Stroke(s.width, cap = StrokeCap.Round, join = StrokeJoin.Round))
 }
 
 private fun DrawScope.drawWbShape(s: WbShape) {
-    val fill = if (s.fillColor.toULong() != 0x00000000UL) Color(s.fillColor) else null
+    val fill = if (s.fillColor.toInt() != 0) argbColor(s.fillColor) else null
     val stroke = Stroke(s.strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
     when (s.kind) {
         "rect" -> {
             val r = Rect(minOf(s.x1, s.x2), minOf(s.y1, s.y2), maxOf(s.x1, s.x2), maxOf(s.y1, s.y2))
             if (fill != null) drawRect(fill, topLeft = r.topLeft, size = r.size, style = Fill)
-            drawRect(Color(s.strokeColor), topLeft = r.topLeft, size = r.size, style = stroke)
+            drawRect(argbColor(s.strokeColor), topLeft = r.topLeft, size = r.size, style = stroke)
         }
         "circle" -> {
             val center = Offset((s.x1 + s.x2) / 2f, (s.y1 + s.y2) / 2f)
             val rx = abs(s.x2 - s.x1) / 2f; val ry = abs(s.y2 - s.y1) / 2f
             val radius = min(rx, ry)
             if (fill != null) drawCircle(fill, radius, center, style = Fill)
-            drawCircle(Color(s.strokeColor), radius, center, style = stroke)
+            drawCircle(argbColor(s.strokeColor), radius, center, style = stroke)
         }
         "line" -> {
-            drawLine(Color(s.strokeColor), Offset(s.x1, s.y1), Offset(s.x2, s.y2), s.strokeWidth, StrokeCap.Round)
+            drawLine(argbColor(s.strokeColor), Offset(s.x1, s.y1), Offset(s.x2, s.y2), s.strokeWidth, StrokeCap.Round)
         }
     }
 }
 
 private fun DrawScope.drawShapePreview(tool: WbTool, a: Offset, d: Offset, color: Long, fill: Long, width: Float) {
     val stroke = Stroke(width, cap = StrokeCap.Round, join = StrokeJoin.Round)
-    val fillC = if (fill.toULong() != 0x00000000UL) Color(fill) else null
+    val fillC = if (fill.toInt() != 0) argbColor(fill) else null
     when (tool) {
         WbTool.Rect -> {
             val r = Rect(minOf(a.x, d.x), minOf(a.y, d.y), maxOf(a.x, d.x), maxOf(a.y, d.y))
             if (fillC != null) drawRect(fillC, r.topLeft, r.size, style = Fill)
-            drawRect(Color(color), r.topLeft, r.size, style = stroke)
+            drawRect(argbColor(color), r.topLeft, r.size, style = stroke)
         }
         WbTool.Circle -> {
             val center = Offset((a.x + d.x) / 2f, (a.y + d.y) / 2f)
             val radius = min(abs(d.x - a.x), abs(d.y - a.y)) / 2f
             if (fillC != null) drawCircle(fillC, radius, center, style = Fill)
-            drawCircle(Color(color), radius, center, style = stroke)
+            drawCircle(argbColor(color), radius, center, style = stroke)
         }
-        WbTool.Line -> drawLine(Color(color), a, d, width, StrokeCap.Round)
+        WbTool.Line -> drawLine(argbColor(color), a, d, width, StrokeCap.Round)
         else -> {}
     }
 }
