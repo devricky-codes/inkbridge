@@ -205,7 +205,7 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
             )
 
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { resync(webSocketClient, strokes, shapes) }) {
+            TextButton(onClick = { resync(webSocketClient, strokes, shapes, images) }) {
                 Text("Resync", color = Color(0xFF4488FF))
             }
             TextButton(onClick = {
@@ -429,8 +429,8 @@ private fun handleEraser(
     strokes: MutableList<WbStroke>, shapes: MutableList<WbShape>,
     ws: InkbridgeWebSocketClient
 ) {
-    if (event.actionMasked != MotionEvent.ACTION_DOWN) return
-    val hitRadius = 20f
+    if (event.actionMasked != MotionEvent.ACTION_DOWN && event.actionMasked != MotionEvent.ACTION_MOVE) return
+    val hitRadius = 24f
     // Check strokes — remove first one whose any point is within radius
     val hitStroke = strokes.firstOrNull { s ->
         s.points.any { p -> sqrt((p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy)) < hitRadius }
@@ -553,12 +553,25 @@ private fun sendErase(ws: InkbridgeWebSocketClient, id: String) {
     } catch (_: Exception) {}
 }
 
-private fun resync(ws: InkbridgeWebSocketClient, strokes: List<WbStroke>, shapes: List<WbShape>) {
+private fun resync(ws: InkbridgeWebSocketClient, strokes: List<WbStroke>, shapes: List<WbShape>, images: List<WbImage>) {
     try {
         // Send clear then re-send everything
         ws.sendText(JSONObject().apply { put("type", "wb-resync-begin") }.toString())
         for (s in strokes) sendStroke(ws, s)
         for (s in shapes) sendShape(ws, s)
+        for (img in images) {
+            try {
+                val stream = java.io.ByteArrayOutputStream()
+                img.bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, stream)
+                val b64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+                ws.sendText(JSONObject().apply {
+                    put("type", "wb-image"); put("id", img.id)
+                    put("x", img.x.toDouble()); put("y", img.y.toDouble())
+                    put("w", img.w.toDouble()); put("h", img.h.toDouble())
+                    put("data", b64)
+                }.toString())
+            } catch (_: Exception) {}
+        }
         ws.sendText(JSONObject().apply { put("type", "wb-resync-end") }.toString())
     } catch (_: Exception) {}
 }

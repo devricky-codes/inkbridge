@@ -42,7 +42,6 @@ fun TextInjectMode(
     var inkBuilder by remember { mutableStateOf(Ink.builder()) }
     var strokeBuilder by remember { mutableStateOf(Ink.Stroke.builder()) }
     var recognizeJob by remember { mutableStateOf<Job?>(null) }
-    var recognizeEnabled by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // Initialize ML Kit recognizer (English)
@@ -54,34 +53,26 @@ fun TextInjectMode(
         DigitalInkRecognition.getClient(DigitalInkRecognizerOptions.builder(model).build())
     }
 
-    // Enable recognize button 2s after last stroke
-    fun scheduleRecognizeEnable() {
+    // Auto-recognize and send 2s after last stroke
+    fun autoRecognizeAndSend() {
         recognizeJob?.cancel()
-        recognizeEnabled = false
         recognizeJob = scope.launch {
             delay(2000)
-            recognizeEnabled = true
-        }
-    }
-
-    // Manual recognize and send
-    fun recognizeAndSend() {
-        if (!recognizeEnabled) return
-        recognizeEnabled = false
-        val ink = inkBuilder.build()
-        if (ink.strokes.isEmpty()) return
-        recognizer.recognize(ink).addOnSuccessListener { result ->
-            if (result.candidates.isNotEmpty()) {
-                val text = result.candidates[0].text
-                sentLog = if (sentLog.isEmpty()) text else "$sentLog $text"
-                val json = JSONObject()
-                json.put("type", "inject")
-                json.put("text", text)
-                wsClient.sendText(json.toString())
+            val ink = inkBuilder.build()
+            if (ink.strokes.isEmpty()) return@launch
+            recognizer.recognize(ink).addOnSuccessListener { result ->
+                if (result.candidates.isNotEmpty()) {
+                    val text = result.candidates[0].text
+                    sentLog = if (sentLog.isEmpty()) text else "$sentLog $text"
+                    val json = JSONObject()
+                    json.put("type", "inject")
+                    json.put("text", text)
+                    wsClient.sendText(json.toString())
+                }
+                committedPaths.clear()
+                strokePoints.clear()
+                inkBuilder = Ink.builder()
             }
-            committedPaths.clear()
-            strokePoints.clear()
-            inkBuilder = Ink.builder()
         }
     }
 
@@ -132,7 +123,6 @@ fun TextInjectMode(
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
                             recognizeJob?.cancel()
-                            recognizeEnabled = false
                             strokeBuilder = Ink.Stroke.builder()
                             strokePoints.clear()
                             val x = event.x
@@ -167,8 +157,8 @@ fun TextInjectMode(
                             committedPaths.add(path)
                             strokePoints.clear()
                             inkBuilder.addStroke(strokeBuilder.build())
-                            // Enable recognize button after 2s delay
-                            scheduleRecognizeEnable()
+                            // Auto-recognize and send after 2s of inactivity
+                            autoRecognizeAndSend()
                             true
                         }
                         else -> false
@@ -205,28 +195,14 @@ fun TextInjectMode(
                 .fillMaxWidth()
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.End
         ) {
-            Button(
-                onClick = { recognizeAndSend() },
-                enabled = recognizeEnabled,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (recognizeEnabled) Color(0xFF4CAF50) else Color(0xFF333333),
-                    contentColor = Color.White,
-                    disabledContainerColor = Color(0xFF222222),
-                    disabledContentColor = Color(0xFF666666)
-                ),
-                modifier = Modifier.height(44.dp)
-            ) {
-                Text("Recognize")
-            }
             TextButton(onClick = {
                 sentLog = ""
                 committedPaths.clear()
                 strokePoints.clear()
                 inkBuilder = Ink.builder()
                 recognizeJob?.cancel()
-                recognizeEnabled = false
             }) {
                 Text("Clear", color = Color.Gray)
             }

@@ -122,19 +122,27 @@ public class NetworkService : BackgroundService
             lock (_clients) _clients.Add(webSocket);
             _logger.LogInformation("WebSocket client connected.");
 
-            var buffer = new byte[8192];
+            var buffer = new byte[65536];
             while (webSocket.State == WebSocketState.Open)
             {
-                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-                
+                // Accumulate frames for large messages
+                var ms = new System.IO.MemoryStream();
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    if (result.MessageType == WebSocketMessageType.Close) break;
+                    ms.Write(buffer, 0, result.Count);
+                } while (!result.EndOfMessage);
+
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
                 }
                 else if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    _logger.LogInformation($"Received JSON: {message}");
+                    var message = Encoding.UTF8.GetString(ms.ToArray());
+                    _logger.LogInformation($"Received JSON ({message.Length} chars)");
                     try
                     {
                         using var doc = System.Text.Json.JsonDocument.Parse(message);
@@ -165,13 +173,14 @@ public class NetworkService : BackgroundService
                 }
                 else if (result.MessageType == WebSocketMessageType.Binary)
                 {
-                    if (result.Count == 21)
+                    var data = ms.ToArray();
+                    if (data.Length == 21)
                     {
-                        byte phase = buffer[0];
-                        float nx = BitConverter.ToSingle(buffer, 1);
-                        float ny = BitConverter.ToSingle(buffer, 5);
-                        float pressure = BitConverter.ToSingle(buffer, 9);
-                        long ts = BitConverter.ToInt64(buffer, 13);
+                        byte phase = data[0];
+                        float nx = BitConverter.ToSingle(data, 1);
+                        float ny = BitConverter.ToSingle(data, 5);
+                        float pressure = BitConverter.ToSingle(data, 9);
+                        long ts = BitConverter.ToInt64(data, 13);
                         _pointerInjector.InjectStroke(phase, nx, ny, pressure, ts);
                     }
                 }
