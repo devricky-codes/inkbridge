@@ -162,6 +162,19 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                             Log.e("Inkbridge", "wb-image: empty data for id=$id")
                         }
                     }
+                    "wb-image-move" -> {
+                        val id = obj.getString("id")
+                        val x = obj.optDouble("x", 0.0).toFloat()
+                        val y = obj.optDouble("y", 0.0).toFloat()
+                        val w = obj.optDouble("w", 200.0).toFloat()
+                        val h = obj.optDouble("h", 200.0).toFloat()
+                        mainHandler.post {
+                            val idx = images.indexOfFirst { it.id == id }
+                            if (idx >= 0) {
+                                images[idx] = images[idx].copy(x = x, y = y, w = w, h = h)
+                            }
+                        }
+                    }
                     "wb-clear" -> {
                         mainHandler.post { strokes.clear(); shapes.clear(); images.clear(); undoStack.clear() }
                     }

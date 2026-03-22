@@ -613,6 +613,8 @@ public partial class WhiteboardWindow : Window
             if (_dragTarget == element)
             {
                 element.ReleaseMouseCapture();
+                if (_isDragging)
+                    SyncElementPosition(element);
                 _dragTarget = null;
             }
         };
@@ -627,7 +629,31 @@ public partial class WhiteboardWindow : Window
             if (!double.IsNaN(element.Height))
                 element.Height = Math.Max(20, Math.Min(3000, element.Height * factor));
             e.Handled = true;
+            SyncElementPosition(element);
         };
+    }
+
+    private void SyncElementPosition(UIElement element)
+    {
+        if (element is not FrameworkElement fe || fe.Tag is not string id) return;
+        var x = Canvas.GetLeft(fe);
+        var y = Canvas.GetTop(fe);
+        if (double.IsNaN(x)) x = 0;
+        if (double.IsNaN(y)) y = 0;
+
+        if (fe is Image img)
+        {
+            var msg = JsonSerializer.Serialize(new
+            {
+                type = "wb-image-move",
+                id,
+                x,
+                y,
+                w = img.Width,
+                h = img.Height
+            });
+            _ = _networkService.BroadcastJsonAsync(msg);
+        }
     }
 
     private void OnCanvasMouseWheel(object sender, MouseWheelEventArgs e)
