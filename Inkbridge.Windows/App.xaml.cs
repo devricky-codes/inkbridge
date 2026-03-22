@@ -62,7 +62,7 @@ public partial class App : System.Windows.Application
                     _whiteboardWindow = new WhiteboardWindow(networkService);
                     networkService.OnWhiteboardMessage = msg =>
                     {
-                        _whiteboardWindow.Dispatcher.Invoke(() => _whiteboardWindow.HandleWhiteboardMessage(msg));
+                        _whiteboardWindow.Dispatcher.BeginInvoke(() => _whiteboardWindow.HandleWhiteboardMessage(msg));
                     };
                     _whiteboardWindow.Closed += (s2, e2) =>
                     {
