@@ -46,49 +46,12 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
 
-// ── Data models ──
-
-/** Convert an ARGB Long (whether sign-extended from local palette or unsigned from PC) to Compose Color via @ColorInt. */
+// Shared classes are in WhiteboardMode.kt
 private fun argbColor(c: Long): Color = Color(c.toInt())
-
-enum class WbTool { Pen, Eraser, Hand, Rect, Circle, Line }
-
-data class WbStroke(
-    val id: String,
-    val points: List<Offset>,
-    val color: Long = 0xFFFFFFFF,
-    val width: Float = 4f
-)
-
-data class WbShape(
-    val id: String,
-    val kind: String, // "rect", "circle", "line"
-    val x1: Float, val y1: Float,
-    val x2: Float, val y2: Float,
-    val strokeColor: Long = 0xFFFFFFFF,
-    val fillColor: Long = 0x00000000, // transparent by default
-    val strokeWidth: Float = 4f
-)
-
-data class WbImage(
-    val id: String,
-    val x: Float, val y: Float,
-    val w: Float, val h: Float,
-    val bitmap: Bitmap
-)
-
-data class ImageChunkState(
-    val x: Float, val y: Float,
-    val w: Float, val h: Float,
-    val totalChunks: Int,
-    val chunks: MutableMap<Int, String> = mutableMapOf()
-)
-
-// ── Composable ──
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
+fun OverlayMode(webSocketClient: InkbridgeWebSocketClient) {
     val strokes = remember { mutableStateListOf<WbStroke>() }
     val shapes = remember { mutableStateListOf<WbShape>() }
     val images = remember { mutableStateListOf<WbImage>() }
@@ -129,9 +92,8 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
     val imageChunkBuffers = remember { mutableMapOf<String, ImageChunkState>() }
     var imageLoadingText by remember { mutableStateOf<String?>(null) }
 
-    // Document mode state
-    var docModeActive by remember { mutableStateOf(false) }
-    var docModeDirName by remember { mutableStateOf("") }
+    // Overlay streamed background
+    var overlayBg by remember { mutableStateOf<Bitmap?>(null) }
 
     // Listen for incoming messages
     LaunchedEffect(Unit) {
@@ -143,21 +105,21 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                 val type = obj.optString("type")
                 // Parse on background, update UI on main
                 when (type) {
-                    "wb-stroke" -> {
+                    "wb-overlay-stroke" -> {
                         val id = obj.getString("id")
                         val pts = parsePoints(obj.getJSONArray("points"))
                         val c = obj.optLong("color", 0xFFFFFFFF)
                         val w = obj.optDouble("width", 4.0).toFloat()
                         mainHandler.post { strokes.add(WbStroke(id, pts, c, w)) }
                     }
-                    "wb-erase" -> {
+                    "wb-overlay-erase" -> {
                         val id = obj.getString("id")
                         mainHandler.post {
                             strokes.removeAll { it.id == id }
                             shapes.removeAll { it.id == id }
                         }
                     }
-                    "wb-shape" -> {
+                    "wb-overlay-shape" -> {
                         val s = parseShape(obj)
                         mainHandler.post { shapes.removeAll { it.id == s.id }; shapes.add(s) }
                     }
@@ -242,15 +204,21 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                             }
                         }
                     }
-                    "wb-clear" -> {
+                    "wb-overlay-clear" -> {
                         mainHandler.post { strokes.clear(); shapes.clear(); images.clear(); undoStack.clear() }
                     }
-                    "wb-doc-state" -> {
-                        val active = obj.optBoolean("active", false)
-                        val dir = obj.optString("dir", "")
-                        mainHandler.post {
-                            docModeActive = active
-                            docModeDirName = dir
+                    "wb-overlay-frame" -> {
+                        val b64 = obj.optString("data", "")
+                        if (b64.isNotEmpty()) {
+                            val bytes = Base64.decode(b64, Base64.DEFAULT)
+                            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            if (bmp != null) mainHandler.post { overlayBg = bmp }
+                        }
+                    }
+                    "wb-overlay-closed" -> {
+                        mainHandler.post { 
+                            overlayBg = null
+                            strokes.clear(); shapes.clear(); images.clear(); undoStack.clear()
                         }
                     }
                 }
@@ -334,75 +302,10 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
             }
             TextButton(onClick = {
                 strokes.clear(); shapes.clear(); images.clear(); currentPoints = emptyList(); undoStack.clear()
-                val msg = JSONObject().apply { put("type", "wb-clear") }
+                val msg = JSONObject().apply { put("type", "wb-overlay-clear") }
                 webSocketClient.sendText(msg.toString())
             }) {
                 Text("Clear", color = Color(0xFF888888))
-            }
-        }
-
-        // ── Document Mode Toolbar ──
-        if (docModeActive) {
-            var showSaveDialog by remember { mutableStateOf(false) }
-            var isNextAction by remember { mutableStateOf(false) }
-            var customName by remember { mutableStateOf("") }
-
-            Row(
-                Modifier.fillMaxWidth().background(Color(0xFF1E2A38)).padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("📄 Doc Mode: $docModeDirName", color = Color.White, fontSize = 14.sp)
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = { isNextAction = false; showSaveDialog = true }) {
-                    Text("Save Page", color = Color(0xFF88CCFF))
-                }
-                TextButton(onClick = { isNextAction = true; showSaveDialog = true }) {
-                    Text("Next Page", color = Color(0xFF88CCFF))
-                }
-            }
-
-            if (showSaveDialog) {
-                AlertDialog(
-                    onDismissRequest = { showSaveDialog = false; customName = "" },
-                    title = { Text(if (isNextAction) "Next Page" else "Save Page") },
-                    text = {
-                        Column {
-                            Text("Enter custom name (leave blank for default):")
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = customName,
-                                onValueChange = { customName = it },
-                                singleLine = true,
-                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF4488FF),
-                                    unfocusedBorderColor = Color(0xFF444444)
-                                )
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            val msg = JSONObject().apply {
-                                put("type", if (isNextAction) "wb-doc-next" else "wb-doc-save")
-                                if (customName.isNotBlank()) put("name", customName.trim())
-                            }
-                            webSocketClient.sendText(msg.toString())
-                            showSaveDialog = false
-                            customName = ""
-                        }) { Text("Save") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = {
-                            val msg = JSONObject().apply {
-                                put("type", if (isNextAction) "wb-doc-next" else "wb-doc-save")
-                            }
-                            webSocketClient.sendText(msg.toString())
-                            showSaveDialog = false
-                            customName = ""
-                        }) { Text("Skip (Default)") }
-                    }
-                )
             }
         }
 
@@ -501,6 +404,15 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                 scale(zoom, zoom, Offset.Zero)
             }) {
                 drawGrid(panX, panY, zoom, size)
+
+                // Draw overlay background frame
+                overlayBg?.let { bg ->
+                    drawImage(
+                        bg.asImageBitmap(),
+                        dstOffset = IntOffset.Zero,
+                        dstSize = IntSize(bg.width, bg.height)
+                    )
+                }
 
                 // Images
                 for (img in images) {
@@ -778,7 +690,7 @@ private fun sendStroke(ws: InkbridgeWebSocketClient, s: WbStroke) {
         val pts = JSONArray()
         for (p in s.points) pts.put(JSONObject().apply { put("x", p.x.toDouble()); put("y", p.y.toDouble()) })
         ws.sendText(JSONObject().apply {
-            put("type", "wb-stroke"); put("id", s.id); put("points", pts)
+            put("type", "wb-overlay-stroke"); put("id", s.id); put("points", pts)
             put("color", s.color); put("width", s.width.toDouble())
         }.toString())
     } catch (_: Exception) {}
@@ -787,7 +699,7 @@ private fun sendStroke(ws: InkbridgeWebSocketClient, s: WbStroke) {
 private fun sendShape(ws: InkbridgeWebSocketClient, s: WbShape) {
     try {
         ws.sendText(JSONObject().apply {
-            put("type", "wb-shape"); put("id", s.id); put("kind", s.kind)
+            put("type", "wb-overlay-shape"); put("id", s.id); put("kind", s.kind)
             put("x1", s.x1.toDouble()); put("y1", s.y1.toDouble())
             put("x2", s.x2.toDouble()); put("y2", s.y2.toDouble())
             put("strokeColor", s.strokeColor); put("fillColor", s.fillColor)
@@ -798,7 +710,7 @@ private fun sendShape(ws: InkbridgeWebSocketClient, s: WbShape) {
 
 private fun sendErase(ws: InkbridgeWebSocketClient, id: String) {
     try {
-        ws.sendText(JSONObject().apply { put("type", "wb-erase"); put("id", id) }.toString())
+        ws.sendText(JSONObject().apply { put("type", "wb-overlay-erase"); put("id", id) }.toString())
     } catch (_: Exception) {}
 }
 

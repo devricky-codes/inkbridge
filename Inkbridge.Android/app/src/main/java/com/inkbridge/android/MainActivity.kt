@@ -186,6 +186,10 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
             TextButton(onClick = { mode = "whiteboard" }) {
                 Text("whiteboard", color = if (mode == "whiteboard") Color.White else Color.DarkGray)
             }
+            Text("|", color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
+            TextButton(onClick = { mode = "overlay" }) {
+                Text("overlay", color = if (mode == "overlay") Color.White else Color.DarkGray)
+            }
         }
 
         Divider(color = Color(0xFF222222), thickness = 0.5.dp)
@@ -193,6 +197,7 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
         when (mode) {
             "text" -> TextInjectMode(wsClient, focusedApp, focusedTitle, injectMethod)
             "whiteboard" -> WhiteboardMode(wsClient)
+            "overlay" -> com.inkbridge.android.ui.OverlayMode(wsClient)
         }
     }
 }

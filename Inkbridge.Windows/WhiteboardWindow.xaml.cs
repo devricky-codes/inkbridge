@@ -54,6 +54,11 @@ public partial class WhiteboardWindow : Window
     // Chunked image receiving
     private readonly Dictionary<string, (double x, double y, double w, double h, int totalChunks, Dictionary<int, string> chunks)> _imageChunkBuffers = new();
 
+    // Document mode state
+    private bool _isDocMode;
+    private string _docModeDir = "";
+    private int _docModePage = 1;
+
     public WhiteboardWindow(NetworkService networkService)
     {
         InitializeComponent();
@@ -161,6 +166,20 @@ public partial class WhiteboardWindow : Window
             {
                 WhiteboardCanvas.Children.Clear();
                 _shapeElements.Clear();
+            }
+            else if (type == "wb-doc-save")
+            {
+                var customName = doc.RootElement.TryGetProperty("name", out var nEl) ? nEl.GetString() : null;
+                Dispatcher.Invoke(() => SaveDocumentPage(customName));
+            }
+            else if (type == "wb-doc-next")
+            {
+                var customName = doc.RootElement.TryGetProperty("name", out var nEl) ? nEl.GetString() : null;
+                Dispatcher.Invoke(() => {
+                    SaveDocumentPage(customName);
+                    OnClear(null, null);
+                    _docModePage++;
+                });
             }
             // wb-resync-end is a no-op, strokes/shapes arrive between begin/end
         }
@@ -615,16 +634,8 @@ public partial class WhiteboardWindow : Window
         }
     }
 
-    private void OnSave(object sender, RoutedEventArgs e)
+    private void SaveWhiteboardToFile(string filePath)
     {
-        var dlg = new SaveFileDialog
-        {
-            Filter = "Inkbridge Whiteboard|*.inkboard",
-            DefaultExt = ".inkboard",
-            FileName = $"whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}"
-        };
-        if (dlg.ShowDialog() != true) return;
-
         var elements = new List<Dictionary<string, object>>();
 
         foreach (var child in WhiteboardCanvas.Children.OfType<FrameworkElement>())
@@ -716,7 +727,83 @@ public partial class WhiteboardWindow : Window
         }
 
         var json = JsonSerializer.Serialize(elements, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(dlg.FileName, json);
+        File.WriteAllText(filePath, json);
+    }
+
+    private void OnSave(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Filter = "Inkbridge Whiteboard|*.inkboard",
+            DefaultExt = ".inkboard",
+            FileName = $"whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}"
+        };
+        if (dlg.ShowDialog() != true) return;
+        SaveWhiteboardToFile(dlg.FileName);
+    }
+
+    // --- Document Mode ---
+    private void OnDocModeToggle(object sender, RoutedEventArgs e)
+    {
+        if (DocModeToggle.IsChecked == true)
+        {
+            using var dialog = new System.Windows.Forms.FolderBrowserDialog();
+            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                _docModeDir = dialog.SelectedPath;
+                _docModePage = 1;
+                _isDocMode = true;
+                DocUI.Visibility = Visibility.Visible;
+                BroadcastDocState();
+            }
+            else
+            {
+                DocModeToggle.IsChecked = false;
+            }
+        }
+        else
+        {
+            _isDocMode = false;
+            DocUI.Visibility = Visibility.Collapsed;
+            BroadcastDocState();
+        }
+    }
+
+    private void BroadcastDocState()
+    {
+        var msg = JsonSerializer.Serialize(new { type = "wb-doc-state", active = _isDocMode, dir = Path.GetFileName(_docModeDir) });
+        _ = _networkService.BroadcastJsonAsync(msg);
+    }
+
+    private void SaveDocumentPage(string? customName)
+    {
+        if (!_isDocMode || string.IsNullOrWhiteSpace(_docModeDir)) return;
+        var name = string.IsNullOrWhiteSpace(customName) 
+            ? $"{Path.GetFileName(_docModeDir)}_Page_{_docModePage}.inkboard" 
+            : (customName.EndsWith(".inkboard") ? customName : customName + ".inkboard");
+        var path = Path.Combine(_docModeDir, name);
+        SaveWhiteboardToFile(path);
+    }
+
+    private void OnDocSave(object sender, RoutedEventArgs e)
+    {
+        // Prompt for custom name or use default
+        SaveDocumentPage(null); // On PC, could add a quick dialog for custom name if needed
+        System.Windows.MessageBox.Show($"Saved Page {_docModePage}.", "Document Mode", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void OnDocNext(object sender, RoutedEventArgs e)
+    {
+        SaveDocumentPage(null);
+        OnClear(null, null);
+        _docModePage++;
+    }
+
+    private void OnOpenOverlay(object sender, RoutedEventArgs e)
+    {
+        var overlayWindow = new OverlayWindow(_networkService);
+        overlayWindow.Show();
+        overlayWindow.Activate();
     }
 
     private async void OnLoad(object sender, RoutedEventArgs e)
@@ -1018,13 +1105,80 @@ public partial class WhiteboardWindow : Window
     {
         element.MouseWheel += (s, e) =>
         {
-            var factor = e.Delta > 0 ? 1.1 : 0.9;
-            element.Width = Math.Max(20, Math.Min(3000, element.Width * factor));
-            if (!double.IsNaN(element.Height))
-                element.Height = Math.Max(20, Math.Min(3000, element.Height * factor));
-            e.Handled = true;
-            SyncElementPosition(element);
+            if (Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                var factor = e.Delta > 0 ? 1.1 : 0.9;
+                element.Width = Math.Max(20, Math.Min(3000, element.Width * factor));
+                if (!double.IsNaN(element.Height))
+                    element.Height = Math.Max(20, Math.Min(3000, element.Height * factor));
+                e.Handled = true;
+                SyncElementPosition(element);
+            }
         };
+    }
+
+    private void OnExportPng(object sender, RoutedEventArgs e)
+    {
+        var bounds = Rect.Empty;
+        foreach (UIElement child in WhiteboardCanvas.Children)
+        {
+            if (child is FrameworkElement fe)
+            {
+                var x = Canvas.GetLeft(fe);
+                var y = Canvas.GetTop(fe);
+                if (double.IsNaN(x)) x = 0;
+                if (double.IsNaN(y)) y = 0;
+
+                // For Polylines, we need to account for their internal RenderedGeometry if possible,
+                // but ActualWidth/Height usually suffices if we call UpdateLayout (they have it)
+                bounds.Union(new Rect(x, y, fe.ActualWidth, fe.ActualHeight));
+            }
+        }
+        if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            System.Windows.MessageBox.Show("Whiteboard is empty.", "Export");
+            return;
+        }
+
+        var dlg = new SaveFileDialog
+        {
+            Filter = "PNG Image|*.png",
+            DefaultExt = ".png",
+            FileName = $"whiteboard_export_{DateTime.Now:yyyyMMdd_HHmmss}"
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        bounds.Inflate(20, 20);
+        var rtb = new RenderTargetBitmap((int)WhiteboardCanvas.Width, (int)WhiteboardCanvas.Height, 96, 96, PixelFormats.Pbgra32);
+        rtb.Render(WhiteboardCanvas);
+
+        var cropRect = new Int32Rect(
+            Math.Max(0, (int)bounds.Left),
+            Math.Max(0, (int)bounds.Top),
+            (int)Math.Min(WhiteboardCanvas.Width - Math.Max(0, (int)bounds.Left), bounds.Width),
+            (int)Math.Min(WhiteboardCanvas.Height - Math.Max(0, (int)bounds.Top), bounds.Height)
+        );
+
+        if (cropRect.Width > 0 && cropRect.Height > 0)
+        {
+            var cb = new CroppedBitmap(rtb, cropRect);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(cb));
+            using var fs = File.OpenWrite(dlg.FileName);
+            encoder.Save(fs);
+        }
+    }
+
+    private void OnShowManual(object sender, RoutedEventArgs e)
+    {
+        System.Windows.MessageBox.Show(
+            "Shortcuts and Controls:\n" +
+            " - Ctrl + Scroll : Scale/Zoom the whiteboard.\n" +
+            " - Alt + Scroll : Scale/Zoom selected image or shape.\n" +
+            " - Drag mouse with 'Pan' toggled : Pan the whiteboard.\n" +
+            " - Ctrl + V : Paste image from clipboard.\n" +
+            " - Drag & Drop : Drop images directly onto whiteboard.",
+            "Manual & Shortcuts", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void SyncElementPosition(UIElement element)

@@ -45,6 +45,7 @@ public partial class App : System.Windows.Application
         try
         {
             base.OnStartup(e);
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
             await _host.StartAsync();
 
             _notifyIcon = new Hardcodet.Wpf.TaskbarNotification.TaskbarIcon();
@@ -63,13 +64,14 @@ public partial class App : System.Windows.Application
                 {
                     var networkService = _host.Services.GetRequiredService<Inkbridge.Windows.Services.NetworkService>();
                     _whiteboardWindow = new WhiteboardWindow(networkService);
-                    networkService.OnWhiteboardMessage = msg =>
+                    Action<string> wbHandler = msg =>
                     {
                         _whiteboardWindow.Dispatcher.BeginInvoke(() => _whiteboardWindow.HandleWhiteboardMessage(msg));
                     };
+                    networkService.OnWhiteboardMessage += wbHandler;
                     _whiteboardWindow.Closed += (s2, e2) =>
                     {
-                        networkService.OnWhiteboardMessage = null;
+                        networkService.OnWhiteboardMessage -= wbHandler;
                         _whiteboardWindow = null;
                     };
                 }
@@ -77,6 +79,16 @@ public partial class App : System.Windows.Application
                 _whiteboardWindow.Activate();
             };
             contextMenu.Items.Add(whiteboardMenuItem);
+
+            var overlayMenuItem = new MenuItem { Header = "Open Overlay" };
+            overlayMenuItem.Click += (s, args) =>
+            {
+                var networkService = _host.Services.GetRequiredService<Inkbridge.Windows.Services.NetworkService>();
+                var overlayWindow = new OverlayWindow(networkService);
+                overlayWindow.Show();
+                overlayWindow.Activate();
+            };
+            contextMenu.Items.Add(overlayMenuItem);
 
             var exitMenuItem = new MenuItem { Header = "Exit Inkbridge" };
             exitMenuItem.Click += async (s, args) =>

@@ -16,11 +16,31 @@
             <ToggleButton x:Name="PanToggle" Content="🤚 Pan" Margin="4,0,12,0"
                           Background="#222" Foreground="#AAD" BorderBrush="#446"
                           Padding="10,4" Click="OnPanToggle"/>
+            <ToggleButton x:Name="DocModeToggle" Content="📄 Doc Mode" Margin="4,0"
+                          Background="#222" Foreground="#DDF" BorderBrush="#333"
+                          Padding="10,4" Click="OnDocModeToggle"/>
+            <StackPanel x:Name="DocUI" Orientation="Horizontal" Visibility="Collapsed">
+                <Button Content="Save Page" Click="OnDocSave" Margin="4,0"
+                        Background="#222" Foreground="#DDF" BorderBrush="#333"
+                        Padding="10,4"/>
+                <Button Content="Next Page" Click="OnDocNext" Margin="4,0"
+                        Background="#222" Foreground="#DDF" BorderBrush="#333"
+                        Padding="10,4"/>
+            </StackPanel>
+            <Button Content="Open Overlay" Click="OnOpenOverlay" Margin="8,0,4,0"
+                    Background="#2A2A2A" Foreground="#F00" BorderBrush="#633"
+                    Padding="10,4"/>
             <Button Content="Add Image" Click="OnAddImage" Margin="4,0"
                     Background="#222" Foreground="#AAA" BorderBrush="#333"
                     Padding="10,4"/>
             <Button Content="Add Link" Click="OnAddLink" Margin="4,0"
                     Background="#222" Foreground="#AAA" BorderBrush="#333"
+                    Padding="10,4"/>
+            <Button Content="Export PNG" Click="OnExportPng" Margin="4,0"
+                    Background="#222" Foreground="#AFA" BorderBrush="#333"
+                    Padding="10,4"/>
+            <Button Content="Manual" Click="OnShowManual" Margin="4,0"
+                    Background="#222" Foreground="#FAA" BorderBrush="#333"
                     Padding="10,4"/>
             <Button Content="Save" Click="OnSave" Margin="4,0"
                     Background="#222" Foreground="#6A6" BorderBrush="#333"

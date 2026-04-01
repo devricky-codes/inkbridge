@@ -26,7 +26,7 @@ public class NetworkService : BackgroundService
         _pointerInjector = pointerInjector;
     }
 
-    public Action<string>? OnWhiteboardMessage { get; set; }
+    public event Action<string>? OnWhiteboardMessage;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
