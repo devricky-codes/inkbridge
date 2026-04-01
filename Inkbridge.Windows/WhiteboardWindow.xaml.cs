@@ -754,6 +754,8 @@ public partial class WhiteboardWindow : Window
                 _docModePage = 1;
                 _isDocMode = true;
                 DocUI.Visibility = Visibility.Visible;
+                DocModePathText.Text = $"📁 Document Mode Active: {_docModeDir}";
+                DocModePathText.Visibility = Visibility.Visible;
                 BroadcastDocState();
             }
             else
@@ -765,6 +767,7 @@ public partial class WhiteboardWindow : Window
         {
             _isDocMode = false;
             DocUI.Visibility = Visibility.Collapsed;
+            DocModePathText.Visibility = Visibility.Collapsed;
             BroadcastDocState();
         }
     }
@@ -782,6 +785,15 @@ public partial class WhiteboardWindow : Window
             ? $"{Path.GetFileName(_docModeDir)}_Page_{_docModePage}.inkboard" 
             : (customName.EndsWith(".inkboard") ? customName : customName + ".inkboard");
         var path = Path.Combine(_docModeDir, name);
+        
+        if (File.Exists(path))
+        {
+            var nameWithoutExt = Path.GetFileNameWithoutExtension(name);
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            name = $"{nameWithoutExt}_{timestamp}.inkboard";
+            path = Path.Combine(_docModeDir, name);
+        }
+
         SaveWhiteboardToFile(path);
     }
 
@@ -814,9 +826,14 @@ public partial class WhiteboardWindow : Window
         };
         if (dlg.ShowDialog() != true) return;
 
+        await LoadWhiteboardFromFileAsync(dlg.FileName);
+    }
+
+    public async Task LoadWhiteboardFromFileAsync(string fileName)
+    {
         try
         {
-            var json = File.ReadAllText(dlg.FileName);
+            var json = File.ReadAllText(fileName);
             // Parse into a list of raw element dictionaries so we don't hold a JsonDocument across awaits
             var elements = JsonSerializer.Deserialize<List<JsonElement>>(json) ?? new List<JsonElement>();
 
@@ -1177,7 +1194,11 @@ public partial class WhiteboardWindow : Window
             " - Alt + Scroll : Scale/Zoom selected image or shape.\n" +
             " - Drag mouse with 'Pan' toggled : Pan the whiteboard.\n" +
             " - Ctrl + V : Paste image from clipboard.\n" +
-            " - Drag & Drop : Drop images directly onto whiteboard.",
+            " - Drag & Drop : Drop images directly onto whiteboard.\n\n" +
+            "Document Mode:\n" +
+            " - 1st in Android activate whiteboard tab then click document mode on pc app\n\n" +
+            "Overlay Mode:\n" +
+            " - 1st in Android activate overlay tab then click overlay mode on pc app",
             "Manual & Shortcuts", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
@@ -1279,5 +1300,20 @@ public partial class WhiteboardWindow : Window
         ScrollHost.ReleaseMouseCapture();
         ScrollHost.Cursor = Cursors.Hand;
         e.Handled = true;
+    }
+
+    private void OnBgColorChanged(object sender, TextChangedEventArgs e)
+    {
+        if (BgColorInput == null || WhiteboardCanvas == null || ScrollHost == null) return;
+        try
+        {
+            if (new BrushConverter().ConvertFromString(BgColorInput.Text) is SolidColorBrush brush)
+            {
+                WhiteboardCanvas.Background = brush;
+                ScrollHost.Background = brush;
+                this.Background = brush;
+            }
+        }
+        catch { }
     }
 }

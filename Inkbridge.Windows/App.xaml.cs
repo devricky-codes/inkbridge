@@ -40,10 +40,37 @@ public partial class App : System.Windows.Application
             .Build();
     }
 
+    public static string[] StartupArgs { get; private set; }
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         try
         {
+            var currentProcess = System.Diagnostics.Process.GetCurrentProcess();
+            var processes = System.Diagnostics.Process.GetProcessesByName(currentProcess.ProcessName);
+            foreach (var process in processes)
+            {
+                if (process.Id != currentProcess.Id)
+                {
+                    try { process.Kill(); } catch { }
+                }
+            }
+
+            StartupArgs = e.Args;
+
+            var exePath = currentProcess.MainModule?.FileName;
+            if (!string.IsNullOrEmpty(exePath))
+            {
+                using var extKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Classes\.inkboard");
+                extKey.SetValue("", "Inkbridge.Whiteboard");
+
+                using var progKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Classes\Inkbridge.Whiteboard");
+                progKey.SetValue("", "Inkbridge Whiteboard File");
+
+                using var cmdKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Classes\Inkbridge.Whiteboard\shell\open\command");
+                cmdKey.SetValue("", $"\"{exePath}\" \"%1\"");
+            }
+
             base.OnStartup(e);
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             await _host.StartAsync();
@@ -60,23 +87,7 @@ public partial class App : System.Windows.Application
             var whiteboardMenuItem = new MenuItem { Header = "Open Whiteboard" };
             whiteboardMenuItem.Click += (s, args) =>
             {
-                if (_whiteboardWindow == null || !_whiteboardWindow.IsLoaded)
-                {
-                    var networkService = _host.Services.GetRequiredService<Inkbridge.Windows.Services.NetworkService>();
-                    _whiteboardWindow = new WhiteboardWindow(networkService);
-                    Action<string> wbHandler = msg =>
-                    {
-                        _whiteboardWindow.Dispatcher.BeginInvoke(() => _whiteboardWindow.HandleWhiteboardMessage(msg));
-                    };
-                    networkService.OnWhiteboardMessage += wbHandler;
-                    _whiteboardWindow.Closed += (s2, e2) =>
-                    {
-                        networkService.OnWhiteboardMessage -= wbHandler;
-                        _whiteboardWindow = null;
-                    };
-                }
-                _whiteboardWindow.Show();
-                _whiteboardWindow.Activate();
+                OpenWhiteboard();
             };
             contextMenu.Items.Add(whiteboardMenuItem);
 
@@ -99,6 +110,11 @@ public partial class App : System.Windows.Application
             };
             contextMenu.Items.Add(exitMenuItem);
             _notifyIcon.ContextMenu = contextMenu;
+
+            if (StartupArgs.Length > 0 && File.Exists(StartupArgs[0]))
+            {
+                OpenWhiteboard(StartupArgs[0]);
+            }
         }
         catch (Exception ex)
         {
@@ -117,5 +133,31 @@ public partial class App : System.Windows.Application
         }
         _notifyIcon?.Dispose();
         base.OnExit(e);
+    }
+
+    private void OpenWhiteboard(string? fileToLoad = null)
+    {
+        if (_whiteboardWindow == null || !_whiteboardWindow.IsLoaded)
+        {
+            var networkService = _host.Services.GetRequiredService<Inkbridge.Windows.Services.NetworkService>();
+            _whiteboardWindow = new WhiteboardWindow(networkService);
+            Action<string> wbHandler = msg =>
+            {
+                _whiteboardWindow.Dispatcher.BeginInvoke(() => _whiteboardWindow.HandleWhiteboardMessage(msg));
+            };
+            networkService.OnWhiteboardMessage += wbHandler;
+            _whiteboardWindow.Closed += (s2, e2) =>
+            {
+                networkService.OnWhiteboardMessage -= wbHandler;
+                _whiteboardWindow = null;
+            };
+        }
+        _whiteboardWindow.Show();
+        _whiteboardWindow.Activate();
+
+        if (!string.IsNullOrEmpty(fileToLoad))
+        {
+            _ = _whiteboardWindow.LoadWhiteboardFromFileAsync(fileToLoad);
+        }
     }
 }
