@@ -44,12 +44,15 @@
                       PreviewMouseMove="OnScrollHostMouseMove"
                       PreviewMouseUp="OnScrollHostMouseUp">
             <Canvas x:Name="WhiteboardCanvas" Width="4000" Height="4000"
-                    Background="#0A0A0A"
-                    MouseWheel="OnCanvasMouseWheel">
-                <Canvas.LayoutTransform>
-                    <ScaleTransform x:Name="CanvasScale" ScaleX="1" ScaleY="1"/>
-                </Canvas.LayoutTransform>
-            </Canvas>
+                                        Background="#0A0A0A"
+                                        MouseWheel="OnCanvasMouseWheel">
+                                <Canvas.RenderTransform>
+                                        <TransformGroup>
+                                                <ScaleTransform x:Name="CanvasScale" ScaleX="1" ScaleY="1"/>
+                                                <TranslateTransform x:Name="CanvasTranslate" X="0" Y="0"/>
+                                        </TransformGroup>
+                                </Canvas.RenderTransform>
+                        </Canvas>
         </ScrollViewer>
 
         <!-- Sending overlay -->

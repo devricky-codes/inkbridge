@@ -45,7 +45,8 @@ public partial class WhiteboardWindow : Window
     // Pan mode state
     private bool _isPanMode;
     private Point _panMouseStart;
-    private double _panScrollStartX, _panScrollStartY;
+    private double _panStartX, _panStartY;
+    private double _panX, _panY;
 
     // Track shapes by id for resizing
     private readonly Dictionary<string, FrameworkElement> _shapeElements = new();
@@ -71,6 +72,14 @@ public partial class WhiteboardWindow : Window
             int dark = 1;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
         };
+
+        PreviewKeyDown += OnWindowKeyDown;
+        // Initialize pan offset
+        _panX = 0;
+        _panY = 0;
+        // Set initial transform
+        CanvasTranslate.X = _panX;
+        CanvasTranslate.Y = _panY;
     }
 
     public void HandleWhiteboardMessage(string json)
@@ -306,6 +315,108 @@ public partial class WhiteboardWindow : Window
             MakeResizable(image);
         }
         catch { }
+    }
+
+    private void OnWindowKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            if (System.Windows.Clipboard.ContainsImage())
+            {
+                PasteImageFromClipboard();
+                e.Handled = true;
+            }
+        }
+    }
+
+    private void PasteImageFromClipboard()
+    {
+        var bitmapSource = System.Windows.Clipboard.GetImage();
+        if (bitmapSource == null) return;
+
+        // Encode to PNG bytes
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmapSource));
+        using var ms = new MemoryStream();
+        encoder.Save(ms);
+        var bytes = ms.ToArray();
+
+        if (bytes.Length > 10 * 1024 * 1024)
+        {
+            System.Windows.MessageBox.Show(
+                $"Pasted image is too large ({bytes.Length / (1024 * 1024)}MB).\nMaximum allowed size is 10MB.",
+                "Image Too Large", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var bitmap = new BitmapImage();
+        bitmap.BeginInit();
+        bitmap.StreamSource = new MemoryStream(bytes);
+        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        bitmap.EndInit();
+        bitmap.Freeze();
+
+        var w = Math.Min(bitmap.PixelWidth, 600.0);
+        var h = w * bitmap.PixelHeight / bitmap.PixelWidth;
+
+        var id = $"img_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{Random.Shared.Next(10000)}";
+
+        // Place near the center of the current viewport
+        var x = ScrollHost.HorizontalOffset / _zoom + ScrollHost.ViewportWidth / _zoom / 2 - w / 2;
+        var y = ScrollHost.VerticalOffset / _zoom + ScrollHost.ViewportHeight / _zoom / 2 - h / 2;
+
+        var image = new Image
+        {
+            Source = bitmap,
+            Width = w,
+            Height = h,
+            Stretch = Stretch.Fill,
+            Tag = id
+        };
+
+        Canvas.SetLeft(image, x);
+        Canvas.SetTop(image, y);
+        WhiteboardCanvas.Children.Add(image);
+
+        MakeDraggable(image);
+        MakeResizable(image);
+
+        // Compress and send to tablet
+        SendBitmapToTablet(bitmapSource, id, x, y, w, h);
+    }
+
+    private async void SendBitmapToTablet(BitmapSource bitmapSource, string id, double x, double y, double w, double h)
+    {
+        try
+        {
+            SendingOverlay.Visibility = Visibility.Visible;
+            SendingLabel.Text = "Sending image...";
+            SendingProgress.Value = 0;
+
+            // Compress to JPEG, resize if needed
+            var encoder = new JpegBitmapEncoder { QualityLevel = 80 };
+            if (bitmapSource.PixelWidth > 1600)
+            {
+                var scale = 1600.0 / bitmapSource.PixelWidth;
+                var tb = new TransformedBitmap(bitmapSource, new ScaleTransform(scale, scale));
+                encoder.Frames.Add(BitmapFrame.Create(tb));
+            }
+            else
+            {
+                encoder.Frames.Add(BitmapFrame.Create(bitmapSource));
+            }
+
+            using var ms = new MemoryStream();
+            encoder.Save(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+
+            await SendBase64ImageToTablet(id, x, y, w, h, b64);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"SendBitmapToTablet error: {ex.Message}");
+            SendingOverlay.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void OnAddImage(object sender, RoutedEventArgs e)
@@ -979,14 +1090,17 @@ public partial class WhiteboardWindow : Window
     {
         _isPanMode = PanToggle.IsChecked == true;
         ScrollHost.Cursor = _isPanMode ? Cursors.Hand : null;
+        // Disable ScrollViewer scrolling in pan mode
+        ScrollHost.HorizontalScrollBarVisibility = _isPanMode ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+        ScrollHost.VerticalScrollBarVisibility = _isPanMode ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
     }
 
     private void OnScrollHostMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (!_isPanMode || e.ChangedButton != MouseButton.Left) return;
         _panMouseStart = e.GetPosition(ScrollHost);
-        _panScrollStartX = ScrollHost.HorizontalOffset;
-        _panScrollStartY = ScrollHost.VerticalOffset;
+        _panStartX = _panX;
+        _panStartY = _panY;
         ScrollHost.CaptureMouse();
         ScrollHost.Cursor = Cursors.SizeAll;
         e.Handled = true;
@@ -998,8 +1112,10 @@ public partial class WhiteboardWindow : Window
         var pos = e.GetPosition(ScrollHost);
         var dx = pos.X - _panMouseStart.X;
         var dy = pos.Y - _panMouseStart.Y;
-        ScrollHost.ScrollToHorizontalOffset(_panScrollStartX - dx);
-        ScrollHost.ScrollToVerticalOffset(_panScrollStartY - dy);
+        _panX = _panStartX + dx;
+        _panY = _panStartY + dy;
+        CanvasTranslate.X = _panX;
+        CanvasTranslate.Y = _panY;
         e.Handled = true;
     }
 
