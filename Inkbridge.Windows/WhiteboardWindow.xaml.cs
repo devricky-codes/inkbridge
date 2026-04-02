@@ -878,6 +878,7 @@ public partial class WhiteboardWindow : Window
         await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-clear" }));
         await Task.Delay(100);
 
+        int zIndex = 0;
         foreach (var el in elements)
         {
             var elType = el.GetProperty("elementType").GetString();
@@ -889,7 +890,11 @@ public partial class WhiteboardWindow : Window
                     var color = ParseColor(el, "color", 0xFFFFFFFF);
                     var width = el.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
                     var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                    int cntBefore = WhiteboardCanvas.Children.Count;
                     DrawStroke(points, color, width, id);
+                    if (WhiteboardCanvas.Children.Count > cntBefore)
+                        Canvas.SetZIndex(WhiteboardCanvas.Children[WhiteboardCanvas.Children.Count - 1], zIndex);
+                    zIndex++;
                     long colorVal = (long)(((ulong)color.A << 24) | ((ulong)color.R << 16) | ((ulong)color.G << 8) | color.B);
                     await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
                         type = "wb-stroke", id,
@@ -901,7 +906,11 @@ public partial class WhiteboardWindow : Window
                 }
                 case "shape":
                 {
+                    int cntBefore = WhiteboardCanvas.Children.Count;
                     HandleShape(el);
+                    if (WhiteboardCanvas.Children.Count > cntBefore)
+                        Canvas.SetZIndex(WhiteboardCanvas.Children[WhiteboardCanvas.Children.Count - 1], zIndex);
+                    zIndex++;
                     var shapeId = el.TryGetProperty("id", out var sidEl) ? sidEl.GetString() ?? "" : "";
                     var kind = el.TryGetProperty("kind", out var kEl) ? kEl.GetString() ?? "rect" : "rect";
                     var sx1 = el.TryGetProperty("x1", out var x1El) ? x1El.GetDouble() : 0;
@@ -921,7 +930,11 @@ public partial class WhiteboardWindow : Window
                 }
                 case "image":
                 {
+                    int cntBefore = WhiteboardCanvas.Children.Count;
                     HandleIncomingImage(el);
+                    if (WhiteboardCanvas.Children.Count > cntBefore)
+                        Canvas.SetZIndex(WhiteboardCanvas.Children[WhiteboardCanvas.Children.Count - 1], zIndex);
+                    zIndex++;
                     var imgData = el.TryGetProperty("data", out var dEl) ? dEl.GetString() ?? "" : "";
                     var imgId = el.TryGetProperty("id", out var iid) ? iid.GetString() ?? "" : "";
                     var imgX = el.TryGetProperty("x", out var ix) ? ix.GetDouble() : 100;
@@ -964,6 +977,8 @@ public partial class WhiteboardWindow : Window
                     Canvas.SetLeft(border, x);
                     Canvas.SetTop(border, y);
                     WhiteboardCanvas.Children.Add(border);
+                    Canvas.SetZIndex(border, zIndex);
+                    zIndex++;
                     MakeDraggable(border);
                     break;
                 }
@@ -995,6 +1010,66 @@ public partial class WhiteboardWindow : Window
 
         await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-image-end", id }));
         SendingOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnFocusFirst(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            // Find the topmost-left stroke or element on the canvas
+            double targetX = double.NaN, targetY = double.NaN;
+
+            foreach (var child in WhiteboardCanvas.Children.OfType<FrameworkElement>())
+            {
+                double cx = double.NaN, cy = double.NaN;
+                if (child is Polyline poly && poly.Points.Count > 0)
+                {
+                    cx = poly.Points[0].X;
+                    cy = poly.Points[0].Y;
+                }
+                else if (child is Line ln)
+                {
+                    cx = Math.Min(ln.X1, ln.X2);
+                    cy = Math.Min(ln.Y1, ln.Y2);
+                }
+                else if (child is Rectangle or Ellipse || child is Image || child is Border)
+                {
+                    cx = Canvas.GetLeft(child);
+                    cy = Canvas.GetTop(child);
+                    // Skip elements with no explicit canvas position
+                    if (double.IsNaN(cx) || double.IsNaN(cy)) { cx = double.NaN; cy = double.NaN; }
+                }
+
+                if (!double.IsNaN(cx) && !double.IsNaN(cy))
+                {
+                    if (double.IsNaN(targetX) || cy < targetY || (Math.Abs(cy - targetY) < 1 && cx < targetX))
+                    {
+                        targetX = cx;
+                        targetY = cy;
+                    }
+                }
+            }
+
+            if (!double.IsNaN(targetX))
+            {
+                // Adjust pan transform so the target point is centred in the viewport.
+                // Screen position of a canvas point = point * zoom + pan - scrollOffset.
+                // We want that to equal viewportSize/2, so:
+                //   pan = viewportSize/2 + scrollOffset - point * zoom
+                _panX = ScrollHost.ViewportWidth / 2 + ScrollHost.HorizontalOffset - targetX * _zoom;
+                _panY = ScrollHost.ViewportHeight / 2 + ScrollHost.VerticalOffset - targetY * _zoom;
+                CanvasTranslate.X = _panX;
+                CanvasTranslate.Y = _panY;
+            }
+            else
+            {
+                System.Windows.MessageBox.Show("No content found on the canvas to focus on.", "Focus", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"Focus failed: {ex.Message}", "Focus Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void OnClear(object sender, RoutedEventArgs e)

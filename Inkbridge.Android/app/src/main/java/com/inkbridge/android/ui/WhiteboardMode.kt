@@ -1,5 +1,6 @@
 package com.inkbridge.android.ui
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Handler
@@ -7,6 +8,10 @@ import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import android.view.MotionEvent
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -88,7 +93,7 @@ data class ImageChunkState(
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
+fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient, onFullscreenChange: (Boolean) -> Unit = {}) {
     val strokes = remember { mutableStateListOf<WbStroke>() }
     val shapes = remember { mutableStateListOf<WbShape>() }
     val images = remember { mutableStateListOf<WbImage>() }
@@ -132,6 +137,37 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
     // Document mode state
     var docModeActive by remember { mutableStateOf(false) }
     var docModeDirName by remember { mutableStateOf("") }
+
+    // Fullscreen mode
+    var isFullscreen by remember { mutableStateOf(false) }
+    val view = LocalView.current
+    LaunchedEffect(isFullscreen) {
+        val window = (view.context as Activity).window
+        val controller = WindowCompat.getInsetsController(window, view)
+        if (isFullscreen) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+        }
+        onFullscreenChange(isFullscreen)
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            val window = (view.context as Activity).window
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+            onFullscreenChange(false)
+        }
+    }
+
+    // Doc-mode save dialog state (hoisted so fullscreen bar can use it too)
+    var showSaveDialog by remember { mutableStateOf(false) }
+    var isNextAction by remember { mutableStateOf(false) }
+    var customName by remember { mutableStateOf("") }
 
     // Listen for incoming messages
     LaunchedEffect(Unit) {
@@ -270,7 +306,8 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(Color(0xFF0A0A0A))) {
 
-        // ── Toolbar row 1: Tools ──
+        // ── Toolbar row 1: Tools ── (hidden in fullscreen)
+        if (!isFullscreen) {
         Row(
             Modifier.fillMaxWidth()
                 .background(Color(0xFF111111))
@@ -344,14 +381,14 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
             }) {
                 Text("Clear", color = Color(0xFF888888))
             }
+            TextButton(onClick = { isFullscreen = true; showColorPicker = false; showFillPicker = false }) {
+                Text("⛶", color = Color(0xFF888888), fontSize = 18.sp)
+            }
         }
+        } // end !isFullscreen toolbar
 
         // ── Document Mode Toolbar ──
-        if (docModeActive) {
-            var showSaveDialog by remember { mutableStateOf(false) }
-            var isNextAction by remember { mutableStateOf(false) }
-            var customName by remember { mutableStateOf("") }
-
+        if (docModeActive && !isFullscreen) {
             Row(
                 Modifier.fillMaxWidth().background(Color(0xFF1E2A38)).padding(horizontal = 12.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -365,57 +402,58 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                     Text("Next Page", color = Color(0xFF88CCFF))
                 }
             }
+        }
 
-            if (showSaveDialog) {
-                AlertDialog(
-                    onDismissRequest = { showSaveDialog = false; customName = "" },
-                    title = { Text(if (isNextAction) "Next Page" else "Save Page") },
-                    text = {
-                        Column {
-                            Text("Enter custom name (leave blank for default):")
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = customName,
-                                onValueChange = { customName = it },
-                                singleLine = true,
-                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF4488FF),
-                                    unfocusedBorderColor = Color(0xFF444444)
-                                )
+        // ── Doc mode save dialog (shared by normal bar and fullscreen bar) ──
+        if (showSaveDialog) {
+            AlertDialog(
+                onDismissRequest = { showSaveDialog = false; customName = "" },
+                title = { Text(if (isNextAction) "Next Page" else "Save Page") },
+                text = {
+                    Column {
+                        Text("Enter custom name (leave blank for default):")
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = customName,
+                            onValueChange = { customName = it },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF4488FF),
+                                unfocusedBorderColor = Color(0xFF444444)
                             )
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            val msg = JSONObject().apply {
-                                put("type", if (isNextAction) "wb-doc-next" else "wb-doc-save")
-                                if (customName.isNotBlank()) put("name", customName.trim())
-                            }
-                            webSocketClient.sendText(msg.toString())
-                            showSaveDialog = false
-                            customName = ""
-                        }) { Text("Save") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = {
-                            val msg = JSONObject().apply {
-                                put("type", if (isNextAction) "wb-doc-next" else "wb-doc-save")
-                            }
-                            webSocketClient.sendText(msg.toString())
-                            showSaveDialog = false
-                            customName = ""
-                        }) { Text("Skip (Default)") }
+                        )
                     }
-                )
-            }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val msg = JSONObject().apply {
+                            put("type", if (isNextAction) "wb-doc-next" else "wb-doc-save")
+                            if (customName.isNotBlank()) put("name", customName.trim())
+                        }
+                        webSocketClient.sendText(msg.toString())
+                        showSaveDialog = false
+                        customName = ""
+                    }) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        val msg = JSONObject().apply {
+                            put("type", if (isNextAction) "wb-doc-next" else "wb-doc-save")
+                        }
+                        webSocketClient.sendText(msg.toString())
+                        showSaveDialog = false
+                        customName = ""
+                    }) { Text("Skip (Default)") }
+                }
+            )
         }
 
         // ── Color picker row ──
-        if (showColorPicker) {
+        if (!isFullscreen && showColorPicker) {
             ColorRow(penColor) { penColor = it; showColorPicker = false }
         }
-        if (showFillPicker) {
+        if (!isFullscreen && showFillPicker) {
             FillColorRow(shapeFillColor) { shapeFillColor = it; showFillPicker = false }
         }
 
@@ -544,6 +582,30 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
             }
         }
     }
+    // ── Fullscreen floating mini-bar ──
+    if (isFullscreen) {
+        Row(
+            Modifier
+                .align(Alignment.TopCenter)
+                .background(Color(0xCC111111), RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (docModeActive) {
+                TextButton(onClick = { isNextAction = false; showSaveDialog = true }) {
+                    Text("Save Page", color = Color(0xFF88CCFF), fontSize = 14.sp)
+                }
+                TextButton(onClick = { isNextAction = true; showSaveDialog = true }) {
+                    Text("Next Page", color = Color(0xFF88CCFF), fontSize = 14.sp)
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+            TextButton(onClick = { isFullscreen = false }) {
+                Text("✕ Exit Fullscreen", color = Color(0xFFFF8888), fontSize = 14.sp)
+            }
+        }
+    }
+
     // Loading overlay for chunked image receiving
     if (imageLoadingText != null) {
         Box(

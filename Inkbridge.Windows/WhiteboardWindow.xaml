@@ -82,6 +82,7 @@
                     <Button Content="Next Page" Click="OnDocNext"/>
                 </StackPanel>
 
+                <Button Content="🎯 Focus" Click="OnFocusFirst"/>
                 <Button Content="Open Overlay" Click="OnOpenOverlay" Background="#7F3333"/>
                 <Button Content="Add Image" Click="OnAddImage"/>
                 <Button Content="Add Link" Click="OnAddLink"/>

@@ -60,6 +60,7 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
     var targetUrl by remember { mutableStateOf<String?>(null) }
     val connectionState by wsClient.connectionState.collectAsState()
     var mode by remember { mutableStateOf("text") }
+    var isModeFullscreen by remember { mutableStateOf(false) }
     var focusedApp by remember { mutableStateOf("Desktop") }
     var focusedTitle by remember { mutableStateOf("Waiting for connection...") }
     var injectMethod by remember { mutableStateOf("-") }
@@ -101,8 +102,8 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0A0A0A))) {
 
-        // ── Connection bar ──────────────────────────────────────────────
-        Column(
+        // ── Connection bar ── (hidden in fullscreen)
+        if (!isModeFullscreen) Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color(0xFF111111))
@@ -171,33 +172,35 @@ fun MainScreen(networkManager: NetworkManager, wsClient: InkbridgeWebSocketClien
             }
         }
 
-        Divider(color = Color(0xFF222222), thickness = 0.5.dp)
+        if (!isModeFullscreen) {
+            Divider(color = Color(0xFF222222), thickness = 0.5.dp)
 
-        // ── Mode tabs ───────────────────────────────────────────────────
-        Row(
-            modifier = Modifier.fillMaxWidth().height(44.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = { mode = "text" }) {
-                Text("inkbridge text", color = if (mode == "text") Color.White else Color.DarkGray)
+            // ── Mode tabs ───────────────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = { mode = "text" }) {
+                    Text("inkbridge text", color = if (mode == "text") Color.White else Color.DarkGray)
+                }
+                Text("|", color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
+                TextButton(onClick = { mode = "whiteboard" }) {
+                    Text("whiteboard", color = if (mode == "whiteboard") Color.White else Color.DarkGray)
+                }
+                Text("|", color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
+                TextButton(onClick = { mode = "overlay" }) {
+                    Text("overlay", color = if (mode == "overlay") Color.White else Color.DarkGray)
+                }
             }
-            Text("|", color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
-            TextButton(onClick = { mode = "whiteboard" }) {
-                Text("whiteboard", color = if (mode == "whiteboard") Color.White else Color.DarkGray)
-            }
-            Text("|", color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
-            TextButton(onClick = { mode = "overlay" }) {
-                Text("overlay", color = if (mode == "overlay") Color.White else Color.DarkGray)
-            }
+
+            Divider(color = Color(0xFF222222), thickness = 0.5.dp)
         }
-
-        Divider(color = Color(0xFF222222), thickness = 0.5.dp)
 
         when (mode) {
             "text" -> TextInjectMode(wsClient, focusedApp, focusedTitle, injectMethod)
-            "whiteboard" -> WhiteboardMode(wsClient)
-            "overlay" -> com.inkbridge.android.ui.OverlayMode(wsClient)
+            "whiteboard" -> WhiteboardMode(wsClient, onFullscreenChange = { isModeFullscreen = it })
+            "overlay" -> com.inkbridge.android.ui.OverlayMode(wsClient, onFullscreenChange = { isModeFullscreen = it })
         }
     }
 }

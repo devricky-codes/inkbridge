@@ -1,5 +1,6 @@
 package com.inkbridge.android.ui
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Handler
@@ -7,6 +8,10 @@ import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import android.view.MotionEvent
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,7 +56,7 @@ private fun argbColor(c: Long): Color = Color(c.toInt())
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun OverlayMode(webSocketClient: InkbridgeWebSocketClient) {
+fun OverlayMode(webSocketClient: InkbridgeWebSocketClient, onFullscreenChange: (Boolean) -> Unit = {}) {
     val strokes = remember { mutableStateListOf<WbStroke>() }
     val shapes = remember { mutableStateListOf<WbShape>() }
     val images = remember { mutableStateListOf<WbImage>() }
@@ -94,6 +99,32 @@ fun OverlayMode(webSocketClient: InkbridgeWebSocketClient) {
 
     // Overlay streamed background
     var overlayBg by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Fullscreen mode
+    var isFullscreen by remember { mutableStateOf(false) }
+    val view = LocalView.current
+    LaunchedEffect(isFullscreen) {
+        val window = (view.context as Activity).window
+        val controller = WindowCompat.getInsetsController(window, view)
+        if (isFullscreen) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+        }
+        onFullscreenChange(isFullscreen)
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            val window = (view.context as Activity).window
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+            onFullscreenChange(false)
+        }
+    }
 
     // Listen for incoming messages
     LaunchedEffect(Unit) {
@@ -238,7 +269,8 @@ fun OverlayMode(webSocketClient: InkbridgeWebSocketClient) {
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(Color(0xFF0A0A0A))) {
 
-        // ── Toolbar row 1: Tools ──
+        // ── Toolbar row 1: Tools ── (hidden in fullscreen)
+        if (!isFullscreen) {
         Row(
             Modifier.fillMaxWidth()
                 .background(Color(0xFF111111))
@@ -312,13 +344,17 @@ fun OverlayMode(webSocketClient: InkbridgeWebSocketClient) {
             }) {
                 Text("Clear", color = Color(0xFF888888))
             }
+            TextButton(onClick = { isFullscreen = true; showColorPicker = false; showFillPicker = false }) {
+                Text("⛶", color = Color(0xFF888888), fontSize = 18.sp)
+            }
         }
+        } // end !isFullscreen toolbar
 
         // ── Color picker row ──
-        if (showColorPicker) {
+        if (!isFullscreen && showColorPicker) {
             ColorRow(penColor) { penColor = it; showColorPicker = false }
         }
-        if (showFillPicker) {
+        if (!isFullscreen && showFillPicker) {
             FillColorRow(shapeFillColor) { shapeFillColor = it; showFillPicker = false }
         }
 
@@ -451,6 +487,21 @@ fun OverlayMode(webSocketClient: InkbridgeWebSocketClient) {
             }
         }
     }
+    // ── Fullscreen floating mini-bar ──
+    if (isFullscreen) {
+        Row(
+            Modifier
+                .align(Alignment.TopCenter)
+                .background(Color(0xCC111111), RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = { isFullscreen = false }) {
+                Text("✕ Exit Fullscreen", color = Color(0xFFFF8888), fontSize = 14.sp)
+            }
+        }
+    }
+
     // Loading overlay for chunked image receiving
     if (imageLoadingText != null) {
         Box(
