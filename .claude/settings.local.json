@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell.exe -File publish.ps1)",
+      "Bash(gradlew.bat assembleRelease)",
+      "Bash(cmd /c \"cd f:\\\\Projects\\\\TabletEasyWrite\\\\Inkbridge.Android && gradlew.bat assembleRelease\")",
+      "Bash(powershell.exe -Command \"Set-Location 'f:\\\\Projects\\\\TabletEasyWrite\\\\Inkbridge.Android'; .\\\\gradlew.bat assembleRelease 2>&1\")",
+      "Bash(powershell.exe -Command \"Stop-Process -Name 'Inkbridge.Windows' -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1\")"
+    ]
+  }
+}

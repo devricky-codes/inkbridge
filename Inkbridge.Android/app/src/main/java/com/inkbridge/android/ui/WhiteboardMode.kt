@@ -260,6 +260,11 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
         }
     }
 
+    // Request current PC state (doc mode) when this tab becomes active
+    LaunchedEffect(Unit) {
+        webSocketClient.sendText(JSONObject().apply { put("type", "wb-state-request") }.toString())
+    }
+
     DisposableEffect(Unit) { onDispose { webSocketClient.onWhiteboardMessage = null } }
 
     Box(Modifier.fillMaxSize()) {
@@ -461,10 +466,15 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient) {
                                 else -> {}
                             }
 
-                            WbTool.Pen -> handlePen(event, cx, cy, penColor, penWidth,
-                                { currentStrokeId = it }, { currentPoints = it },
-                                currentPoints, currentStrokeId,
-                                strokes, undoStack, webSocketClient, { tabletBusy = it })
+                            WbTool.Pen -> {
+                                val toolType = event.getToolType(0)
+                                if (toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER) {
+                                    handlePen(event, cx, cy, penColor, penWidth,
+                                        { currentStrokeId = it }, { currentPoints = it },
+                                        currentPoints, currentStrokeId,
+                                        strokes, undoStack, webSocketClient, { tabletBusy = it })
+                                }
+                            }
 
                             WbTool.Eraser -> handleEraser(event, cx, cy, strokes, shapes, webSocketClient)
 

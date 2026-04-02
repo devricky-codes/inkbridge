@@ -4,6 +4,59 @@
         Title="Inkbridge Whiteboard" Height="720" Width="1080"
         Background="#0A0A0A" AllowDrop="True"
         Drop="OnDrop" DragOver="OnDragOver">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#2D2D44"/>
+            <Setter Property="Foreground" Value="#EEEEFF"/>
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="Margin" Value="3,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#4A4A6A"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#1F1F30"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ToggleButton">
+            <Setter Property="Background" Value="#2D2D44"/>
+            <Setter Property="Foreground" Value="#EEEEFF"/>
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="Margin" Value="3,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#4477FF"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#4A4A6A"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -11,30 +64,35 @@
         </Grid.RowDefinitions>
 
         <!-- Toolbar -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="8,4"
-                    HorizontalAlignment="Right">
-            <ToggleButton x:Name="PanToggle" Content="🤚 Pan" Margin="4,0,12,0"
-                          Background="#222" Foreground="#AAD" BorderBrush="#446"
-                          Padding="10,4" Click="OnPanToggle"/>
-            <Button Content="Add Image" Click="OnAddImage" Margin="4,0"
-                    Background="#222" Foreground="#AAA" BorderBrush="#333"
-                    Padding="10,4"/>
-            <Button Content="Add Link" Click="OnAddLink" Margin="4,0"
-                    Background="#222" Foreground="#AAA" BorderBrush="#333"
-                    Padding="10,4"/>
-            <Button Content="Save" Click="OnSave" Margin="4,0"
-                    Background="#222" Foreground="#6A6" BorderBrush="#333"
-                    Padding="10,4"/>
-            <Button Content="Load" Click="OnLoad" Margin="4,0"
-                    Background="#222" Foreground="#68F" BorderBrush="#333"
-                    Padding="10,4"/>
-            <Button Content="Clear" Click="OnClear" Margin="4,0"
-                    Background="#222" Foreground="#666" BorderBrush="#333"
-                    Padding="10,4"/>
-            <Button Content="🔄 Sync to Tablet" Click="OnSyncToTablet" Margin="8,0,4,0"
-                    Background="#2A2A2A" Foreground="#F80" BorderBrush="#F80"
-                    Padding="10,4"/>
-        </StackPanel>
+        <Border Grid.Row="0" Background="#161622" Padding="8">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <TextBlock Text="Bg Hex:" Foreground="#AAA" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBox x:Name="BgColorInput" Text="#0A0A0A" Width="70" Background="#0C0C12" Foreground="#FFF"
+                             BorderThickness="1" BorderBrush="#333" Padding="4" VerticalContentAlignment="Center"
+                             TextChanged="OnBgColorChanged"/>
+                </StackPanel>
+
+                <ToggleButton x:Name="PanToggle" Content="🤚 Pan" Margin="0,0,12,0"
+                              Click="OnPanToggle"/>
+                <ToggleButton x:Name="DocModeToggle" Content="📄 Doc Mode" Click="OnDocModeToggle"/>
+                <StackPanel x:Name="DocUI" Orientation="Horizontal" Visibility="Collapsed">
+                    <Button Content="Save Page" Click="OnDocSave"/>
+                    <Button Content="Next Page" Click="OnDocNext"/>
+                </StackPanel>
+
+                <Button Content="Open Overlay" Click="OnOpenOverlay" Background="#7F3333"/>
+                <Button Content="Add Image" Click="OnAddImage"/>
+                <Button Content="Add Link" Click="OnAddLink"/>
+                <Button Content="Export PNG" Click="OnExportPng"/>
+                <Button Content="Manual" Click="OnShowManual"/>
+                <Button Content="Save" Click="OnSave" Background="#337F44"/>
+                <Button Content="Load" Click="OnLoad" Background="#33447F"/>
+                <Button Content="Clear" Click="OnClear" Background="#666"/>
+                <Button Content="🔄 Sync to Tablet" Click="OnSyncToTablet" Margin="12,0,0,0" Background="#996611"/>
+            </StackPanel>
+        </Border>
 
         <!-- Canvas with scroll/zoom -->
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto"
@@ -67,6 +125,12 @@
                              Margin="0,12,0,0" Minimum="0" Maximum="100"
                              Foreground="#4488FF"/>
             </StackPanel>
+        </Border>
+
+        <!-- Document Mode Directory Path -->
+        <Border Grid.Row="1" HorizontalAlignment="Left" VerticalAlignment="Top"
+                Margin="16" IsHitTestVisible="False" Background="#99000000" CornerRadius="8" Padding="12,6">
+            <TextBlock x:Name="DocModePathText" Foreground="#AACCFF" FontSize="14" Visibility="Collapsed"/>
         </Border>
     </Grid>
 </Window>

@@ -54,6 +54,17 @@ public partial class WhiteboardWindow : Window
     // Chunked image receiving
     private readonly Dictionary<string, (double x, double y, double w, double h, int totalChunks, Dictionary<int, string> chunks)> _imageChunkBuffers = new();
 
+    // Document mode state
+    private bool _isDocMode;
+    private string _docModeDir = "";
+    private int _docModePage = 1;
+
+    // Blank canvas tracking — scroll to first incoming stroke
+    private bool _isBlankCanvas = true;
+
+    // Overlay window reference for state sync
+    private OverlayWindow? _overlayWindow;
+
     public WhiteboardWindow(NetworkService networkService)
     {
         InitializeComponent();
@@ -95,6 +106,17 @@ public partial class WhiteboardWindow : Window
                 var width = doc.RootElement.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
                 var color = ParseColor(doc.RootElement, "color", 0xFFFFFFFF);
                 DrawStroke(points, color, width, doc.RootElement.TryGetProperty("id", out var idEl) ? idEl.GetString() : null);
+                if (_isBlankCanvas && points.Count > 0)
+                {
+                    _isBlankCanvas = false;
+                    var sx = points[0].X;
+                    var sy = points[0].Y;
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        ScrollHost.ScrollToHorizontalOffset(sx * _zoom - ScrollHost.ViewportWidth / 2);
+                        ScrollHost.ScrollToVerticalOffset(sy * _zoom - ScrollHost.ViewportHeight / 2);
+                    }, System.Windows.Threading.DispatcherPriority.Loaded);
+                }
             }
             else if (type == "wb-shape")
             {
@@ -109,6 +131,7 @@ public partial class WhiteboardWindow : Window
             {
                 WhiteboardCanvas.Children.Clear();
                 _shapeElements.Clear();
+                _isBlankCanvas = true;
             }
             else if (type == "wb-image")
             {
@@ -161,6 +184,30 @@ public partial class WhiteboardWindow : Window
             {
                 WhiteboardCanvas.Children.Clear();
                 _shapeElements.Clear();
+            }
+            else if (type == "wb-doc-save")
+            {
+                var customName = doc.RootElement.TryGetProperty("name", out var nEl) ? nEl.GetString() : null;
+                Dispatcher.Invoke(() => SaveDocumentPage(customName));
+            }
+            else if (type == "wb-doc-next")
+            {
+                var customName = doc.RootElement.TryGetProperty("name", out var nEl) ? nEl.GetString() : null;
+                Dispatcher.Invoke(() => {
+                    SaveDocumentPage(customName);
+                    OnClear(null, null);
+                    _docModePage++;
+                });
+            }
+            else if (type == "wb-state-request")
+            {
+                // Tablet is requesting current PC state — send doc mode info
+                Dispatcher.Invoke(BroadcastDocState);
+            }
+            else if (type == "wb-overlay-state-request")
+            {
+                // Tablet is requesting overlay state — trigger an immediate frame if overlay is open
+                Dispatcher.Invoke(() => _overlayWindow?.RequestImmediateFrame());
             }
             // wb-resync-end is a no-op, strokes/shapes arrive between begin/end
         }
@@ -615,16 +662,8 @@ public partial class WhiteboardWindow : Window
         }
     }
 
-    private void OnSave(object sender, RoutedEventArgs e)
+    private void SaveWhiteboardToFile(string filePath)
     {
-        var dlg = new SaveFileDialog
-        {
-            Filter = "Inkbridge Whiteboard|*.inkboard",
-            DefaultExt = ".inkboard",
-            FileName = $"whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}"
-        };
-        if (dlg.ShowDialog() != true) return;
-
         var elements = new List<Dictionary<string, object>>();
 
         foreach (var child in WhiteboardCanvas.Children.OfType<FrameworkElement>())
@@ -716,126 +755,219 @@ public partial class WhiteboardWindow : Window
         }
 
         var json = JsonSerializer.Serialize(elements, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(dlg.FileName, json);
+        File.WriteAllText(filePath, json);
     }
 
-    private async void OnLoad(object sender, RoutedEventArgs e)
+    private void OnSave(object sender, RoutedEventArgs e)
     {
-        var dlg = new OpenFileDialog
+        var dlg = new SaveFileDialog
         {
-            Filter = "Inkbridge Whiteboard|*.inkboard"
+            Filter = "Inkbridge Whiteboard|*.inkboard",
+            DefaultExt = ".inkboard",
+            FileName = $"whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}"
         };
         if (dlg.ShowDialog() != true) return;
+        SaveWhiteboardToFile(dlg.FileName);
+    }
 
+    // --- Document Mode ---
+    private void OnDocModeToggle(object sender, RoutedEventArgs e)
+    {
+        if (DocModeToggle.IsChecked == true)
+        {
+            using var dialog = new System.Windows.Forms.FolderBrowserDialog();
+            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                _docModeDir = dialog.SelectedPath;
+                _docModePage = 1;
+                _isDocMode = true;
+                DocUI.Visibility = Visibility.Visible;
+                DocModePathText.Text = $"📁 Document Mode Active: {_docModeDir}";
+                DocModePathText.Visibility = Visibility.Visible;
+                BroadcastDocState();
+            }
+            else
+            {
+                DocModeToggle.IsChecked = false;
+            }
+        }
+        else
+        {
+            _isDocMode = false;
+            DocUI.Visibility = Visibility.Collapsed;
+            DocModePathText.Visibility = Visibility.Collapsed;
+            BroadcastDocState();
+        }
+    }
+
+    private void BroadcastDocState()
+    {
+        var msg = JsonSerializer.Serialize(new { type = "wb-doc-state", active = _isDocMode, dir = Path.GetFileName(_docModeDir) });
+        _ = _networkService.BroadcastJsonAsync(msg);
+    }
+
+    private void SaveDocumentPage(string? customName)
+    {
+        if (!_isDocMode || string.IsNullOrWhiteSpace(_docModeDir)) return;
+        var name = string.IsNullOrWhiteSpace(customName)
+            ? $"{Path.GetFileName(_docModeDir)}_Page_{_docModePage}.inkboard"
+            : (customName.EndsWith(".inkboard") ? customName : customName + ".inkboard");
+        var path = Path.Combine(_docModeDir, name);
+
+        if (File.Exists(path))
+        {
+            var nameWithoutExt = Path.GetFileNameWithoutExtension(name);
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            name = $"{nameWithoutExt}_{timestamp}.inkboard";
+            path = Path.Combine(_docModeDir, name);
+        }
+
+        SaveWhiteboardToFile(path);
+    }
+
+    private void OnDocSave(object sender, RoutedEventArgs e)
+    {
+        SaveDocumentPage(null);
+        System.Windows.MessageBox.Show($"Saved Page {_docModePage}.", "Document Mode", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void OnDocNext(object sender, RoutedEventArgs e)
+    {
+        SaveDocumentPage(null);
+        OnClear(null, null);
+        _docModePage++;
+    }
+
+    private void OnOpenOverlay(object sender, RoutedEventArgs e)
+    {
+        _overlayWindow = new OverlayWindow(_networkService);
+        _overlayWindow.Closed += (s, args) => _overlayWindow = null;
+        _overlayWindow.Show();
+        _overlayWindow.Activate();
+    }
+
+    public async Task LoadWhiteboardFromFileAsync(string filePath)
+    {
         try
         {
-            var json = File.ReadAllText(dlg.FileName);
-            // Parse into a list of raw element dictionaries so we don't hold a JsonDocument across awaits
-            var elements = JsonSerializer.Deserialize<List<JsonElement>>(json) ?? new List<JsonElement>();
-
-            WhiteboardCanvas.Children.Clear();
-            _shapeElements.Clear();
-
-            // Clear tablet and give it time to process
-            await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-clear" }));
-            await Task.Delay(100);
-
-            foreach (var el in elements)
-            {
-                var elType = el.GetProperty("elementType").GetString();
-                switch (elType)
-                {
-                    case "stroke":
-                    {
-                        var points = ParsePoints(el.GetProperty("points"));
-                        var color = ParseColor(el, "color", 0xFFFFFFFF);
-                        var width = el.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
-                        var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
-                        DrawStroke(points, color, width, id);
-                        // Broadcast stroke to tablet - use (long) cast so Java/Kotlin can parse as signed long
-                        long colorVal = (long)(((ulong)color.A << 24) | ((ulong)color.R << 16) | ((ulong)color.G << 8) | color.B);
-                        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
-                            type = "wb-stroke", id,
-                            points = points.Select(p => new { x = p.X, y = p.Y }),
-                            color = colorVal, width
-                        }));
-                        await Task.Delay(10);
-                        break;
-                    }
-                    case "shape":
-                    {
-                        HandleShape(el);
-                        var shapeId = el.TryGetProperty("id", out var sidEl) ? sidEl.GetString() ?? "" : "";
-                        var kind = el.TryGetProperty("kind", out var kEl) ? kEl.GetString() ?? "rect" : "rect";
-                        var sx1 = el.TryGetProperty("x1", out var x1El) ? x1El.GetDouble() : 0;
-                        var sy1 = el.TryGetProperty("y1", out var y1El) ? y1El.GetDouble() : 0;
-                        var sx2 = el.TryGetProperty("x2", out var x2El) ? x2El.GetDouble() : 100;
-                        var sy2 = el.TryGetProperty("y2", out var y2El) ? y2El.GetDouble() : 100;
-                        long sc = el.TryGetProperty("strokeColor", out var scEl) ? scEl.GetInt64() : unchecked((long)0xFFFFFFFF);
-                        long fc = el.TryGetProperty("fillColor", out var fcEl) ? fcEl.GetInt64() : 0L;
-                        var sw = el.TryGetProperty("strokeWidth", out var swEl) ? swEl.GetDouble() : 4.0;
-                        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
-                            type = "wb-shape", id = shapeId, kind,
-                            x1 = sx1, y1 = sy1, x2 = sx2, y2 = sy2,
-                            strokeColor = sc, fillColor = fc, strokeWidth = sw
-                        }));
-                        await Task.Delay(10);
-                        break;
-                    }
-                    case "image":
-                    {
-                        HandleIncomingImage(el);
-                        var imgData = el.TryGetProperty("data", out var dEl) ? dEl.GetString() ?? "" : "";
-                        var imgId = el.TryGetProperty("id", out var iid) ? iid.GetString() ?? "" : "";
-                        var imgX = el.TryGetProperty("x", out var ix) ? ix.GetDouble() : 100;
-                        var imgY = el.TryGetProperty("y", out var iy) ? iy.GetDouble() : 100;
-                        var imgW = el.TryGetProperty("w", out var iw) ? iw.GetDouble() : 400;
-                        var imgH = el.TryGetProperty("h", out var ih) ? ih.GetDouble() : 300;
-                        if (!string.IsNullOrEmpty(imgData))
-                            await SendBase64ImageToTablet(imgId, imgX, imgY, imgW, imgH, imgData);
-                        break;
-                    }
-                    case "link":
-                    {
-                        var url = el.GetProperty("url").GetString() ?? "";
-                        var x = el.TryGetProperty("x", out var xEl) ? xEl.GetDouble() : 200;
-                        var y = el.TryGetProperty("y", out var yEl) ? yEl.GetDouble() : 200;
-                        var border = new Border
-                        {
-                            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x2E)),
-                            BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x66)),
-                            BorderThickness = new Thickness(1),
-                            CornerRadius = new CornerRadius(6),
-                            Padding = new Thickness(12, 8, 12, 8),
-                            Child = new TextBlock
-                            {
-                                Text = url,
-                                Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x99, 0xFF)),
-                                FontSize = 14,
-                                TextDecorations = TextDecorations.Underline,
-                                Cursor = Cursors.Hand
-                            }
-                        };
-                        var capturedUrl = url;
-                        border.MouseLeftButtonUp += (s, args) =>
-                        {
-                            if (!_isDragging)
-                            {
-                                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(capturedUrl) { UseShellExecute = true }); } catch { }
-                            }
-                        };
-                        Canvas.SetLeft(border, x);
-                        Canvas.SetTop(border, y);
-                        WhiteboardCanvas.Children.Add(border);
-                        MakeDraggable(border);
-                        break;
-                    }
-                }
-            }
+            var json = File.ReadAllText(filePath);
+            await LoadWhiteboardFromJsonAsync(json);
         }
         catch (Exception ex)
         {
             System.Windows.MessageBox.Show($"Failed to load whiteboard: {ex.Message}", "Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void OnLoad(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog { Filter = "Inkbridge Whiteboard|*.inkboard" };
+        if (dlg.ShowDialog() != true) return;
+        await LoadWhiteboardFromFileAsync(dlg.FileName);
+    }
+
+    private async Task LoadWhiteboardFromJsonAsync(string json)
+    {
+        // Parse into a list of raw element dictionaries so we don't hold a JsonDocument across awaits
+        var elements = JsonSerializer.Deserialize<List<JsonElement>>(json) ?? new List<JsonElement>();
+
+        WhiteboardCanvas.Children.Clear();
+        _shapeElements.Clear();
+
+        // Clear tablet and give it time to process
+        await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new { type = "wb-clear" }));
+        await Task.Delay(100);
+
+        foreach (var el in elements)
+        {
+            var elType = el.GetProperty("elementType").GetString();
+            switch (elType)
+            {
+                case "stroke":
+                {
+                    var points = ParsePoints(el.GetProperty("points"));
+                    var color = ParseColor(el, "color", 0xFFFFFFFF);
+                    var width = el.TryGetProperty("width", out var wEl) ? wEl.GetDouble() : 4.0;
+                    var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                    DrawStroke(points, color, width, id);
+                    long colorVal = (long)(((ulong)color.A << 24) | ((ulong)color.R << 16) | ((ulong)color.G << 8) | color.B);
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-stroke", id,
+                        points = points.Select(p => new { x = p.X, y = p.Y }),
+                        color = colorVal, width
+                    }));
+                    await Task.Delay(10);
+                    break;
+                }
+                case "shape":
+                {
+                    HandleShape(el);
+                    var shapeId = el.TryGetProperty("id", out var sidEl) ? sidEl.GetString() ?? "" : "";
+                    var kind = el.TryGetProperty("kind", out var kEl) ? kEl.GetString() ?? "rect" : "rect";
+                    var sx1 = el.TryGetProperty("x1", out var x1El) ? x1El.GetDouble() : 0;
+                    var sy1 = el.TryGetProperty("y1", out var y1El) ? y1El.GetDouble() : 0;
+                    var sx2 = el.TryGetProperty("x2", out var x2El) ? x2El.GetDouble() : 100;
+                    var sy2 = el.TryGetProperty("y2", out var y2El) ? y2El.GetDouble() : 100;
+                    long sc = el.TryGetProperty("strokeColor", out var scEl) ? scEl.GetInt64() : unchecked((long)0xFFFFFFFF);
+                    long fc = el.TryGetProperty("fillColor", out var fcEl) ? fcEl.GetInt64() : 0L;
+                    var sw = el.TryGetProperty("strokeWidth", out var swEl) ? swEl.GetDouble() : 4.0;
+                    await _networkService.BroadcastJsonAsync(JsonSerializer.Serialize(new {
+                        type = "wb-shape", id = shapeId, kind,
+                        x1 = sx1, y1 = sy1, x2 = sx2, y2 = sy2,
+                        strokeColor = sc, fillColor = fc, strokeWidth = sw
+                    }));
+                    await Task.Delay(10);
+                    break;
+                }
+                case "image":
+                {
+                    HandleIncomingImage(el);
+                    var imgData = el.TryGetProperty("data", out var dEl) ? dEl.GetString() ?? "" : "";
+                    var imgId = el.TryGetProperty("id", out var iid) ? iid.GetString() ?? "" : "";
+                    var imgX = el.TryGetProperty("x", out var ix) ? ix.GetDouble() : 100;
+                    var imgY = el.TryGetProperty("y", out var iy) ? iy.GetDouble() : 100;
+                    var imgW = el.TryGetProperty("w", out var iw) ? iw.GetDouble() : 400;
+                    var imgH = el.TryGetProperty("h", out var ih) ? ih.GetDouble() : 300;
+                    if (!string.IsNullOrEmpty(imgData))
+                        await SendBase64ImageToTablet(imgId, imgX, imgY, imgW, imgH, imgData);
+                    break;
+                }
+                case "link":
+                {
+                    var url = el.GetProperty("url").GetString() ?? "";
+                    var x = el.TryGetProperty("x", out var xEl) ? xEl.GetDouble() : 200;
+                    var y = el.TryGetProperty("y", out var yEl) ? yEl.GetDouble() : 200;
+                    var border = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x2E)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x66)),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(6),
+                        Padding = new Thickness(12, 8, 12, 8),
+                        Child = new TextBlock
+                        {
+                            Text = url,
+                            Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x99, 0xFF)),
+                            FontSize = 14,
+                            TextDecorations = TextDecorations.Underline,
+                            Cursor = Cursors.Hand
+                        }
+                    };
+                    var capturedUrl = url;
+                    border.MouseLeftButtonUp += (s, args) =>
+                    {
+                        if (!_isDragging)
+                        {
+                            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(capturedUrl) { UseShellExecute = true }); } catch { }
+                        }
+                    };
+                    Canvas.SetLeft(border, x);
+                    Canvas.SetTop(border, y);
+                    WhiteboardCanvas.Children.Add(border);
+                    MakeDraggable(border);
+                    break;
+                }
+            }
         }
     }
 
@@ -869,6 +1001,7 @@ public partial class WhiteboardWindow : Window
     {
         WhiteboardCanvas.Children.Clear();
         _shapeElements.Clear();
+        _isBlankCanvas = true;
         var msg = JsonSerializer.Serialize(new { type = "wb-clear" });
         _ = _networkService.BroadcastJsonAsync(msg);
     }
@@ -948,6 +1081,12 @@ public partial class WhiteboardWindow : Window
             }
             catch { }
         }
+
+        // Always re-send doc mode state so tablet is in sync
+        BroadcastDocState();
+
+        // If overlay is open, send an immediate frame so tablet overlay tab gets the current state
+        _overlayWindow?.RequestImmediateFrame();
     }
 
     // Drag support
@@ -1018,13 +1157,96 @@ public partial class WhiteboardWindow : Window
     {
         element.MouseWheel += (s, e) =>
         {
-            var factor = e.Delta > 0 ? 1.1 : 0.9;
-            element.Width = Math.Max(20, Math.Min(3000, element.Width * factor));
-            if (!double.IsNaN(element.Height))
-                element.Height = Math.Max(20, Math.Min(3000, element.Height * factor));
-            e.Handled = true;
-            SyncElementPosition(element);
+            if (Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                var factor = e.Delta > 0 ? 1.1 : 0.9;
+                element.Width = Math.Max(20, Math.Min(3000, element.Width * factor));
+                if (!double.IsNaN(element.Height))
+                    element.Height = Math.Max(20, Math.Min(3000, element.Height * factor));
+                e.Handled = true;
+                SyncElementPosition(element);
+            }
         };
+    }
+
+    private void OnExportPng(object sender, RoutedEventArgs e)
+    {
+        var bounds = Rect.Empty;
+        foreach (UIElement child in WhiteboardCanvas.Children)
+        {
+            if (child is FrameworkElement fe)
+            {
+                var x = Canvas.GetLeft(fe);
+                var y = Canvas.GetTop(fe);
+                if (double.IsNaN(x)) x = 0;
+                if (double.IsNaN(y)) y = 0;
+                bounds.Union(new Rect(x, y, fe.ActualWidth, fe.ActualHeight));
+            }
+        }
+        if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            System.Windows.MessageBox.Show("Whiteboard is empty.", "Export");
+            return;
+        }
+
+        var dlg = new SaveFileDialog
+        {
+            Filter = "PNG Image|*.png",
+            DefaultExt = ".png",
+            FileName = $"whiteboard_export_{DateTime.Now:yyyyMMdd_HHmmss}"
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        bounds.Inflate(20, 20);
+        var rtb = new RenderTargetBitmap((int)WhiteboardCanvas.Width, (int)WhiteboardCanvas.Height, 96, 96, PixelFormats.Pbgra32);
+        rtb.Render(WhiteboardCanvas);
+
+        var cropRect = new Int32Rect(
+            Math.Max(0, (int)bounds.Left),
+            Math.Max(0, (int)bounds.Top),
+            (int)Math.Min(WhiteboardCanvas.Width - Math.Max(0, (int)bounds.Left), bounds.Width),
+            (int)Math.Min(WhiteboardCanvas.Height - Math.Max(0, (int)bounds.Top), bounds.Height)
+        );
+
+        if (cropRect.Width > 0 && cropRect.Height > 0)
+        {
+            var cb = new CroppedBitmap(rtb, cropRect);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(cb));
+            using var fs = File.OpenWrite(dlg.FileName);
+            encoder.Save(fs);
+        }
+    }
+
+    private void OnShowManual(object sender, RoutedEventArgs e)
+    {
+        System.Windows.MessageBox.Show(
+            "Shortcuts and Controls:\n" +
+            " - Ctrl + Scroll : Scale/Zoom the whiteboard.\n" +
+            " - Alt + Scroll : Scale/Zoom selected image or shape.\n" +
+            " - Drag mouse with 'Pan' toggled : Pan the whiteboard.\n" +
+            " - Ctrl + V : Paste image from clipboard.\n" +
+            " - Drag & Drop : Drop images directly onto whiteboard.\n\n" +
+            "Document Mode:\n" +
+            " - 1st in Android activate whiteboard tab then click document mode on pc app\n\n" +
+            "Overlay Mode:\n" +
+            " - 1st in Android activate overlay tab then click overlay mode on pc app",
+            "Manual & Shortcuts", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void OnBgColorChanged(object sender, TextChangedEventArgs e)
+    {
+        if (BgColorInput == null || WhiteboardCanvas == null || ScrollHost == null) return;
+        try
+        {
+            if (new BrushConverter().ConvertFromString(BgColorInput.Text) is SolidColorBrush brush)
+            {
+                WhiteboardCanvas.Background = brush;
+                ScrollHost.Background = brush;
+                this.Background = brush;
+            }
+        }
+        catch { }
     }
 
     private void SyncElementPosition(UIElement element)

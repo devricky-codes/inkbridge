@@ -228,6 +228,11 @@ fun OverlayMode(webSocketClient: InkbridgeWebSocketClient) {
         }
     }
 
+    // Request current PC overlay state when this tab becomes active
+    LaunchedEffect(Unit) {
+        webSocketClient.sendText(JSONObject().apply { put("type", "wb-overlay-state-request") }.toString())
+    }
+
     DisposableEffect(Unit) { onDispose { webSocketClient.onWhiteboardMessage = null } }
 
     Box(Modifier.fillMaxSize()) {

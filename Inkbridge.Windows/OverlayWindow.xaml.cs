@@ -86,6 +86,11 @@ public partial class OverlayWindow : Window
             DragMove();
     }
 
+    public void RequestImmediateFrame()
+    {
+        Dispatcher.BeginInvoke(CaptureAndSend, DispatcherPriority.Normal);
+    }
+
     private async void CaptureAndSend()
     {
         try
