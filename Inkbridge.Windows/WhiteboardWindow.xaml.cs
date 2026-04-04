@@ -1351,10 +1351,22 @@ public partial class WhiteboardWindow : Window
     {
         if (Keyboard.Modifiers == ModifierKeys.Control)
         {
+            // Mouse position in canvas-local coordinates (before transform)
+            var mouseCanvas = e.GetPosition(WhiteboardCanvas);
+
+            var oldZoom = _zoom;
             var factor = e.Delta > 0 ? 1.1 : 0.9;
             _zoom = Math.Max(0.1, Math.Min(5.0, _zoom * factor));
             CanvasScale.ScaleX = _zoom;
             CanvasScale.ScaleY = _zoom;
+
+            // Keep the canvas point under the cursor fixed on screen.
+            // screen = point * zoom + pan  →  newPan = pan + point * (oldZoom - newZoom)
+            _panX += mouseCanvas.X * (oldZoom - _zoom);
+            _panY += mouseCanvas.Y * (oldZoom - _zoom);
+            CanvasTranslate.X = _panX;
+            CanvasTranslate.Y = _panY;
+
             e.Handled = true;
         }
     }
