@@ -408,9 +408,19 @@ public partial class WhiteboardWindow : Window
 
         var id = $"img_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{Random.Shared.Next(10000)}";
 
-        // Place near the center of the current viewport
-        var x = ScrollHost.HorizontalOffset / _zoom + ScrollHost.ViewportWidth / _zoom / 2 - w / 2;
-        var y = ScrollHost.VerticalOffset / _zoom + ScrollHost.ViewportHeight / _zoom / 2 - h / 2;
+        // Place at current cursor location (centered); fall back to viewport center if cursor is outside the canvas
+        double x, y;
+        var mousePos = Mouse.GetPosition(WhiteboardCanvas);
+        if (WhiteboardCanvas.IsMouseOver)
+        {
+            x = mousePos.X - w / 2;
+            y = mousePos.Y - h / 2;
+        }
+        else
+        {
+            x = ScrollHost.HorizontalOffset / _zoom + ScrollHost.ViewportWidth / _zoom / 2 - w / 2;
+            y = ScrollHost.VerticalOffset / _zoom + ScrollHost.ViewportHeight / _zoom / 2 - h / 2;
+        }
 
         var image = new Image
         {
