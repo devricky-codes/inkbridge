@@ -582,26 +582,96 @@ fun WhiteboardMode(webSocketClient: InkbridgeWebSocketClient, onFullscreenChange
             }
         }
     }
-    // ── Fullscreen floating mini-bar ──
+    // ── Fullscreen floating toolbar ──
     if (isFullscreen) {
-        Row(
+        Column(
             Modifier
                 .align(Alignment.TopCenter)
                 .background(Color(0xCC111111), RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
         ) {
-            if (docModeActive) {
-                TextButton(onClick = { isNextAction = false; showSaveDialog = true }) {
-                    Text("Save Page", color = Color(0xFF88CCFF), fontSize = 14.sp)
+            Row(
+                Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ToolBtn("✏️", activeTool == WbTool.Pen) { activeTool = WbTool.Pen }
+                ToolBtn("🧹", activeTool == WbTool.Eraser) { activeTool = WbTool.Eraser }
+                ToolBtn("🤚", activeTool == WbTool.Hand) { activeTool = WbTool.Hand }
+                ToolBtn("🔍", zoomEnabled) { zoomEnabled = !zoomEnabled }
+                Spacer(Modifier.width(8.dp))
+                ToolBtn("▭", activeTool == WbTool.Rect) { activeTool = WbTool.Rect }
+                ToolBtn("◯", activeTool == WbTool.Circle) { activeTool = WbTool.Circle }
+                ToolBtn("╱", activeTool == WbTool.Line) { activeTool = WbTool.Line }
+                Spacer(Modifier.width(12.dp))
+                Box(
+                    Modifier.size(28.dp).background(Color(penColor), CircleShape)
+                        .border(1.dp, Color.Gray, CircleShape)
+                        .clickable { showColorPicker = !showColorPicker; showFillPicker = false }
+                )
+                Spacer(Modifier.width(6.dp))
+                if (activeTool in listOf(WbTool.Rect, WbTool.Circle)) {
+                    Box(
+                        Modifier.size(28.dp)
+                            .background(if (shapeFillColor.toULong() == 0x00000000UL) Color(0xFF0A0A0A) else Color(shapeFillColor), CircleShape)
+                            .border(1.dp, Color(0xFF666666), CircleShape)
+                            .clickable { showFillPicker = !showFillPicker; showColorPicker = false }
+                    ) {
+                        if (shapeFillColor.toULong() == 0x00000000UL) {
+                            Text("∅", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.align(Alignment.Center))
+                        }
+                    }
+                    Spacer(Modifier.width(6.dp))
                 }
-                TextButton(onClick = { isNextAction = true; showSaveDialog = true }) {
-                    Text("Next Page", color = Color(0xFF88CCFF), fontSize = 14.sp)
+                Text("W", color = Color.Gray, fontSize = 12.sp)
+                Slider(
+                    value = penWidth,
+                    onValueChange = { penWidth = it },
+                    valueRange = 1f..20f,
+                    modifier = Modifier.width(100.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = {
+                    if (undoStack.isNotEmpty()) {
+                        val (kind, id) = undoStack.removeAt(undoStack.lastIndex)
+                        when (kind) {
+                            "stroke" -> strokes.removeAll { it.id == id }
+                            "shape" -> shapes.removeAll { it.id == id }
+                        }
+                        sendErase(webSocketClient, id)
+                    }
+                }) {
+                    Text("↩", color = if (undoStack.isNotEmpty()) Color(0xFFFFAA00) else Color(0xFF444444), fontSize = 18.sp)
+                }
+                TextButton(onClick = { resync(webSocketClient, strokes, shapes, images) }) {
+                    Text("Resync", color = Color(0xFF4488FF))
+                }
+                TextButton(onClick = {
+                    strokes.clear(); shapes.clear(); images.clear(); currentPoints = emptyList(); undoStack.clear()
+                    val msg = JSONObject().apply { put("type", "wb-clear") }
+                    webSocketClient.sendText(msg.toString())
+                }) {
+                    Text("Clear", color = Color(0xFF888888))
+                }
+                if (docModeActive) {
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { isNextAction = false; showSaveDialog = true }) {
+                        Text("Save Page", color = Color(0xFF88CCFF), fontSize = 14.sp)
+                    }
+                    TextButton(onClick = { isNextAction = true; showSaveDialog = true }) {
+                        Text("Next Page", color = Color(0xFF88CCFF), fontSize = 14.sp)
+                    }
                 }
                 Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { isFullscreen = false }) {
+                    Text("✕", color = Color(0xFFFF8888), fontSize = 18.sp)
+                }
             }
-            TextButton(onClick = { isFullscreen = false }) {
-                Text("✕ Exit Fullscreen", color = Color(0xFFFF8888), fontSize = 14.sp)
+            if (showColorPicker) {
+                ColorRow(penColor) { penColor = it; showColorPicker = false }
+            }
+            if (showFillPicker) {
+                FillColorRow(shapeFillColor) { shapeFillColor = it; showFillPicker = false }
             }
         }
     }

@@ -62,6 +62,9 @@ public partial class WhiteboardWindow : Window
     // Blank canvas tracking — scroll to first incoming stroke
     private bool _isBlankCanvas = true;
 
+    // Last clicked position on the canvas (for paste placement)
+    private Point? _lastClickPoint;
+
     // Overlay window reference for state sync
     private OverlayWindow? _overlayWindow;
 
@@ -408,13 +411,12 @@ public partial class WhiteboardWindow : Window
 
         var id = $"img_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{Random.Shared.Next(10000)}";
 
-        // Place at current cursor location (centered); fall back to viewport center if cursor is outside the canvas
+        // Place at last clicked position (centered); fall back to viewport center
         double x, y;
-        var mousePos = Mouse.GetPosition(WhiteboardCanvas);
-        if (WhiteboardCanvas.IsMouseOver)
+        if (_lastClickPoint.HasValue)
         {
-            x = mousePos.X - w / 2;
-            y = mousePos.Y - h / 2;
+            x = _lastClickPoint.Value.X - w / 2;
+            y = _lastClickPoint.Value.Y - h / 2;
         }
         else
         {
@@ -1310,7 +1312,7 @@ public partial class WhiteboardWindow : Window
             " - Ctrl + Scroll : Scale/Zoom the whiteboard.\n" +
             " - Alt + Scroll : Scale/Zoom selected image or shape.\n" +
             " - Drag mouse with 'Pan' toggled : Pan the whiteboard.\n" +
-            " - Ctrl + V : Paste image from clipboard.\n" +
+            " - Ctrl + V : Paste image from clipboard at last clicked position.\n" +
             " - Drag & Drop : Drop images directly onto whiteboard.\n\n" +
             "Document Mode:\n" +
             " - 1st in Android activate whiteboard tab then click document mode on pc app\n\n" +
@@ -1416,6 +1418,11 @@ public partial class WhiteboardWindow : Window
 
     private void OnScrollHostMouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton == MouseButton.Left)
+        {
+            _lastClickPoint = e.GetPosition(WhiteboardCanvas);
+        }
+
         if (!_isPanMode || e.ChangedButton != MouseButton.Left) return;
         _panMouseStart = e.GetPosition(ScrollHost);
         _panStartX = _panX;
